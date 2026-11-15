@@ -1,0 +1,17 @@
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/LICENSE
+!/package.json
+!/package-lock.json
+!/extension/
+!/tools/
+!/tests/
+!/docs/
+/node_modules/
+/artifacts/
+/dist/
+/.offline-test-*/
+/.extension-test-*/
+/tests/*.local.*

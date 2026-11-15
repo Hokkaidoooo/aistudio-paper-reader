@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'">
+    <title>纸间阅读 · 离线试读</title>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { margin: 0; min-height: 100%; }
+        body {
+            --color-v3-surface: #181a1c;
+            --color-v3-overlay-background: #222528;
+            --color-v3-surface-left-nav: #191919;
+            --color-v3-surface-container: #202325;
+            --color-v3-surface-container-high: #292d30;
+            --color-v3-surface-container-highest: #34383c;
+            --color-v3-button-container: #2c3135;
+            --color-v3-button-container-high: #3a414d;
+            --color-v3-button-container-highest: #41464b;
+            --color-v3-button-container-accent: #3c4854;
+            --color-v3-text: #e2e3e4;
+            --color-v3-text-var: #aeb7bc;
+            --color-v3-text-on-button: #eef0f2;
+            --color-v3-text-link: #9db5ff;
+            --color-v3-outline: #454b50;
+            --color-v3-outline-var: #34383a;
+            --color-v3-hover: #303234;
+            --color-on-surface: #e2e3e4;
+            --color-on-surface-variant: #c6cbce;
+            --color-logo-lockup: #f0f0f0;
+            --color-run-settings-text: #cbd0d3;
+            --v3-shadow-sm: 0 2px 6px #00000030;
+            --v3-shadow-md: 0 8px 20px #00000060;
+            background: var(--color-v3-surface); color: var(--color-v3-text); font: 15px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+        }
+        app-root, ms-app, ms-navbar-v2, ms-prompt-renderer, ms-chunk-editor, ms-playground-toolbar, ms-right-side-panel, ms-run-settings, ms-prompt-box, ms-chat-bottom-overlay, ms-token-count, mat-select, ms-chat-prompt, ms-autoscroll-container, ms-chat-turn, ms-text-chunk, ms-cmark-node, ms-code-block { display: block; min-width: 0; }
+        button, select { font: inherit; cursor: pointer; }
+        button:disabled { cursor: default; opacity: .5; }
+        .makersuite-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr) 280px; min-height: 100vh; }
+        ms-navbar-v2 { position: sticky; top: 0; height: 100vh; padding: 24px 16px; background: var(--color-v3-surface-left-nav); color: var(--color-v3-text); border-right: 1px solid var(--color-v3-outline-var); }
+        .brand { display: block; margin: 0 4px 36px; font-size: 20px; font-weight: 600; letter-spacing: -.04em; color: var(--color-logo-lockup); }
+        .nav-caption { margin: 26px 12px 9px; color: var(--color-v3-text-var); font-size: 11px; letter-spacing: .08em; }
+        ms-navbar-v2 nav { display: grid; gap: 6px; }
+        ms-navbar-v2 nav a { display: block; color: var(--color-on-surface-variant); text-decoration: none; padding: 10px 14px; border-radius: 12px; }
+        ms-navbar-v2 nav a[aria-current="page"] { background: var(--color-v3-hover); color: var(--color-v3-text); }
+        .nav-footer { position: absolute; bottom: 88px; left: 16px; right: 16px; color: var(--color-v3-text-var); font-size: 12px; padding: 14px; border: 1px solid var(--color-v3-outline); border-radius: 12px; }
+        .nav-settings { width: 100%; text-align: left; padding: 9px 14px; margin-top: 26px; border: 1px solid var(--color-v3-outline); border-radius: 10px; background: var(--color-v3-button-container); color: var(--color-v3-text-on-button); }
+        .layout-wrapper, .layout-main, ms-prompt-renderer, ms-chunk-editor, .chunk-editor-main { min-width: 0; background: var(--color-v3-surface); color: var(--color-v3-text); }
+        .chunk-editor-main { min-height: 100vh; }
+        ms-playground-toolbar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 76px; padding: 16px 26px; background: var(--color-v3-surface-container); color: var(--color-v3-text); box-shadow: 0 12px 24px #000000a0; }
+        .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
+        .mode-title { margin: 0; font-size: 17px; font-weight: 600; color: var(--color-v3-text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+        ms-token-count { white-space: nowrap; font-size: 12px; color: var(--color-v3-text-var); }
+        .ms-button-icon, .ms-button-borderless { padding: 6px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--color-on-surface-variant); }
+        .chat-container, .chat-view-container { min-width: 0; background: var(--color-v3-surface); color: var(--color-v3-text); }
+        ms-chat-prompt { padding: 12px 24px 30px; }
+        ms-autoscroll-container { max-width: 1180px; margin: auto; }
+        .chat-turn-container { max-width: 940px; margin: 18px auto; background: #1d2023; border: 1px solid #474b50; border-radius: 14px; padding: 24px 30px; }
+        .chat-turn-container.user { background: #282c30; }
+        .turn-information { color: #a8acb2; font-size: 12px; display: flex; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+        .turn-content { font-size: 15px; line-height: 1.6; min-width: 0; }
+        h1 { font-size: 28px; }
+        h2 { font-size: 23px; }
+        h3 { font-size: 18px; }
+        a { color: var(--color-v3-text-link); }
+        blockquote { margin-inline: 0; padding: 10px 16px; border-left: 3px solid #7f8b98; background: #282e35; }
+        pre { overflow-x: auto; padding: 20px; background: #101215; border-radius: 8px; color: #d9e2e8; }
+        code { font-family: Consolas, monospace; }
+        ms-katex.inline, ms-katex.inline pre, ms-katex.inline code.rendered { display: inline; background: transparent; border: 0; padding: 0; margin: 0; white-space: normal; }
+        ms-katex.inline code.rendered { font-family: "Times New Roman", serif; font-size: 1em; }
+        .hljs-keyword { color: #dcb3ff; } .hljs-string { color: #aad192; } .hljs-number { color: #dbbb87; }
+        table { border-collapse: collapse; max-width: 100%; }
+        td, th { padding: 10px; border: 1px solid #51585c; text-align: left; }
+        .actions-container { margin-top: 24px; display: flex; gap: 8px; }
+        .native-button { font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 7px; padding: 4px 10px; cursor: pointer; }
+        .code-block-container { background: var(--color-v3-surface-container-high); color: var(--color-v3-text); border: 1px solid var(--color-v3-outline); border-radius: 12px; overflow: hidden; }
+        .code-block-header { display: flex; justify-content: space-between; align-items: center; padding: 9px 14px; background: var(--color-v3-surface-container-highest); color: var(--color-v3-text); font-size: 13px; }
+        .code-block-header button { padding: 4px 9px; border: 0; border-radius: 6px; background: var(--color-v3-button-container-highest); color: var(--color-v3-text-on-button); }
+        .code-block-content { background: var(--color-v3-surface); color: var(--color-v3-text); min-width: 0; }
+        .chunk-editor-main > footer { position: sticky; bottom: 0; z-index: 2; padding: 12px 18px 16px; background: var(--color-v3-surface); color: var(--color-v3-text); }
+        .chunk-editor-main > footer::before { content: ""; position: absolute; bottom: 100%; left: 0; right: 0; height: 54px; background: linear-gradient(transparent, #111315); pointer-events: none; }
+        ms-chat-bottom-overlay { position: absolute; bottom: 100%; left: 0; right: 0; height: 30px; background: linear-gradient(transparent, #0d0f11); pointer-events: none; }
+        ms-prompt-box { display: block; max-width: 880px; margin: auto; background: var(--color-v3-surface-container); color: var(--color-v3-text); border-radius: 16px; }
+        .preview-input { margin: 0; padding: 18px; border: 1px solid var(--color-v3-outline); border-radius: 16px; background: var(--color-v3-surface-container-high); color: var(--color-v3-text); }
+        .preview-input label { display: block; font-size: 13px; margin-bottom: 8px; }
+        .preview-input textarea { box-sizing: border-box; display: block; width: 100%; min-height: 70px; background: transparent; color: inherit; border: 0; resize: vertical; font: inherit; outline-offset: 4px; }
+        .preview-input p { font-size: 12px; margin-bottom: 0; color: var(--color-v3-text-var); }
+        .buttons-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-top: 12px; }
+        .enabled-tool-container { display: inline-flex; padding: 5px 10px; background: var(--color-v3-button-container-high); color: var(--color-v3-text-on-button); border-radius: 18px; font-size: 12px; }
+        .run-button { padding: 5px 14px; background: var(--color-v3-button-container-accent); color: var(--color-v3-text-on-button); border: 1px solid var(--color-v3-outline); border-radius: 20px; }
+        .footnote { max-width: 880px; margin: 8px auto 0; color: var(--color-v3-text-var); font-size: 11px; text-align: right; }
+        ms-right-side-panel { position: sticky; top: 0; height: 100vh; overflow-y: auto; background: var(--color-v3-surface); color: var(--color-run-settings-text); border-left: 1px solid var(--color-v3-outline-var); }
+        .settings-header { display: flex; align-items: center; justify-content: space-between; padding: 22px 20px; border-bottom: 1px solid var(--color-v3-outline-var); color: var(--color-v3-text); }
+        ms-run-settings { padding: 20px; background: var(--color-v3-surface); color: var(--color-run-settings-text); }
+        .settings-section { margin-bottom: 22px; padding-bottom: 22px; border-bottom: 1px solid var(--color-v3-outline); color: var(--color-on-surface-variant); }
+        .settings-section h2, .settings-section h3 { margin: 0 0 10px; font-size: 14px; font-weight: 500; color: var(--color-v3-text); }
+        .settings-section p { margin: 6px 0 0; font-size: 13px; color: var(--color-v3-text-var); }
+        .model-selector-card { padding: 16px; background: var(--color-v3-surface-container-high); border: 1px solid var(--color-v3-outline); border-radius: 14px; color: var(--color-v3-text); }
+        .model-selector-card strong { display: block; color: var(--color-v3-text); font-size: 17px; font-weight: 500; }
+        mat-select { padding: 10px 12px; border: 1px solid var(--color-v3-outline); background: var(--color-v3-button-container); color: var(--color-v3-text); border-radius: 10px; }
+        mat-select select { display: block; width: 100%; background: transparent; border: 0; color: var(--color-v3-text); font-size: 14px; }
+        .setting-toggle { display: flex; gap: 10px; align-items: center; color: var(--color-on-surface-variant); font-size: 13px; }
+        @media (max-width: 1099px) { .makersuite-layout { grid-template-columns: 220px minmax(0, 1fr); } ms-right-side-panel { display: none; } }
+        @media (max-width: 799px) { .makersuite-layout { grid-template-columns: minmax(0, 1fr); } ms-navbar-v2 { display: none; } }
+        @media (max-width: 640px) { ms-playground-toolbar { padding: 14px 16px; min-height: 65px; } .toolbar-left { flex-wrap: wrap; gap: 2px; } .toolbar-right { gap: 0; } .mode-title { font-size: 16px; } ms-token-count { flex-basis: 100%; font-size: 11px; } .toolbar-right .share-button { display: none; } ms-chat-prompt { padding: 8px 10px 30px; } .chat-turn-container { padding: 20px 16px; } .chunk-editor-main > footer { padding: 10px 10px 16px; } }
+    </style>
+</head>
+<body>
+    <app-root><ms-app><div class="makersuite-layout" data-preview-shell="app">
+        <ms-navbar-v2 data-preview-shell="navbar">
+            <strong class="brand">Google AI Studio</strong>
+            <p class="nav-caption">EXPLORE</p>
+            <nav aria-label="导航"><a href="#reading" aria-current="page">Playground</a><a href="#reading">History</a></nav>
+            <p class="nav-caption">BUILD</p>
+            <nav aria-label="创作"><a href="#reading">New app</a><a href="#reading">My apps</a><a href="#reading">Gallery</a></nav>
+            <p class="nav-caption">MANAGE</p>
+            <nav aria-label="管理"><a href="#reading">Dashboard</a><a href="#reading">Documentation</a></nav>
+            <button class="nav-settings" type="button" aria-label="导航设置">设置</button>
+            <div class="nav-footer">纸间阅读 · 离线试读</div>
+        </ms-navbar-v2>
+        <div class="layout-wrapper"><main class="layout-main"><ms-prompt-renderer><ms-chunk-editor><div class="chunk-editor-main">
+            <ms-playground-toolbar data-preview-shell="toolbar">
+                <div class="toolbar-left"><h1 class="mode-title">纸间阅读 · 长回答试读</h1><ms-token-count><span class="token-count-container">1,280 tokens</span></ms-token-count></div>
+                <div class="toolbar-right"><button class="ms-button-icon share-button" type="button" aria-label="分享">分享</button><button class="ms-button-icon" type="button" aria-label="更多">⋮</button></div>
+            </ms-playground-toolbar>
+            <div class="chat-container"><div class="chat-view-container" id="reading"><ms-chat-prompt>
+        <ms-autoscroll-container>
+            <ms-chat-turn data-turn-role="User">
+                <div class="chat-turn-container user"><div class="turn-information">你</div><div class="turn-content">为什么长文章读起来容易累？怎样让信息更容易理解？</div></div>
+            </ms-chat-turn>
+            <ms-chat-turn data-turn-role="Model">
+                <div class="chat-turn-container model">
+                    <div class="turn-information"><span>Gemini</span><span>阅读示例</span></div>
+                    <div class="turn-content"><ms-text-chunk><ms-cmark-node class="cmark-node">
+                        <h1><ms-cmark-node>把阅读的节奏，交还给自己</ms-cmark-node></h1>
+                        <p>阅读并不只是把文字映入眼睛。我们会在句子之间停顿，在段落之间整理信息，再把新的内容接到已有的理解上。好的排版，为这些细小的动作留下空间。</p>
+                        <p>一段回答越长，<strong>层次、留白与稳定的行宽</strong>就越重要。与其让所有文字争夺注意力，不如把最值得停下来的地方清楚地标出来。</p>
+                        <h2><ms-cmark-node>01　先让眼睛找到落点</ms-cmark-node></h2>
+                        <p>标题告诉你现在在哪里，段落之间的空隙让你有机会稍作停顿。适中的行宽减少横向寻找下一行的距离；舒展的行距则让上下两行不容易混在一起。</p>
+                        <blockquote><p>读得舒服，不必一次读得更多。能够轻松回到刚才的位置，已经是一种很好的阅读体验。</p></blockquote>
+                        <h2>02　让不同信息拥有自己的形状</h2>
+                        <ul><li><strong>观点</strong>用短段落表达，一段围绕一个意思展开。</li><li><strong>步骤</strong>用顺序列表组织，让动作的先后更清楚。</li><li><strong>比较</strong>交给表格，减少在几段文字之间来回寻找。</li></ul>
+                        <table><thead><tr><th>阅读场景</th><th>可以先试试</th><th>感受重点</th></tr></thead><tbody><tr><td>白天读长回答</td><td>宣纸 · 18 px · 1.90 行距</td><td>底色柔和，段落分明</td></tr><tr><td>查看资料与代码</td><td>雾蓝 · 清晰黑体</td><td>信息边界与代码缩进</td></tr><tr><td>光线较暗的房间</td><td>夜读 · 按环境调低屏幕亮度</td><td>避免屏幕与环境反差过大</td></tr></tbody></table>
+                        <h2>03　代码也可以轻一点</h2>
+                        <p>代码保持等宽字体和原有缩进。长行默认横向滚动，也可以在阅读设置里打开「长代码自动折行」。行内标记，例如 <code>line-height</code>，与正文自然衔接。</p>
+                        <ms-code-block><div class="code-block-container"><div class="code-block-header" data-preview-shell="code-header"><span>Code</span><button type="button" aria-label="复制代码">复制</button></div><div class="code-block-content"><pre><code><span class="hljs-keyword">function</span> readingRhythm(paragraphs) {
+    <span class="hljs-keyword">return</span> paragraphs.map((text, index) =&gt; ({
+        order: index + <span class="hljs-number">1</span>,
+        text,
+        pause: <span class="hljs-string">'留一点空间，再读下一段。'</span>
+    }));
+}
+
+<span class="hljs-keyword">const</span> longLine = <span class="hljs-string">'这是一行用于体验横向滚动与自动折行的示例：保持原始文本和缩进，仅改变视觉排版。ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ'</span>;</code></pre></div></div></ms-code-block>
+                        <div class="math-sentence">行内公式也应保持在句子中，例如 <ms-katex class="inline"><pre><code class="rendered"><span class="katex"><span class="katex-html">E = mc²</span><math hidden><semantics><annotation encoding="application/x-tex">E = mc^2</annotation></semantics></math></span></code></pre></ms-katex>，不额外变成一个代码框。</div>
+                        <h3>慢一点，也是一种有效率</h3>
+                        <p>看到密集的信息时，可以先浏览标题，再选择最需要的段落。阅读设置没有唯一答案，找到与你的屏幕、环境和习惯相合的组合就好。</p>
+                        <hr>
+                        <p><em>一页读完，停一下，再继续。</em></p>
+                    </ms-cmark-node></ms-text-chunk></div>
+                    <div class="actions-container"><button class="native-button" id="native-action" type="button" aria-pressed="false">标记已读</button><span id="native-result" role="status"></span></div>
+                </div>
+            </ms-chat-turn>
+        </ms-autoscroll-container>
+            </ms-chat-prompt></div></div>
+            <footer data-preview-shell="footer"><ms-chat-bottom-overlay></ms-chat-bottom-overlay><ms-prompt-box data-preview-shell="prompt-box"><div class="prompt-box-container preview-input"><label for="preview-draft">试试输入，感受阅读与写作之间的切换</label><textarea id="preview-draft" placeholder="这里的文字仅停留在此页面，不会发送。"></textarea><div class="buttons-row"><span class="enabled-tool-container">阅读与写作</span><button class="run-button" type="button" disabled>运行 ↑</button></div><p>此页为离线示例，不连接 Google，也不保存输入内容。</p></div></ms-prompt-box><p class="footnote">颜色与排版可随时调整 · 左下角「阅读」</p></footer>
+        </div></ms-chunk-editor></ms-prompt-renderer></main></div>
+        <ms-right-side-panel data-preview-shell="settings-panel"><header class="settings-header"><span>Run settings</span><button class="ms-button-icon" type="button" aria-label="关闭设置">×</button></header><ms-run-settings>
+            <section class="settings-section"><div class="model-selector-card" data-preview-shell="model-card"><strong>Gemini</strong><p>阅读示例模型</p><p>把复杂的资料整理成清楚的观点、步骤与结论。</p></div></section>
+            <section class="settings-section"><h2>System instructions</h2><p>请用清楚的结构回答问题，保留必要的例子，并照顾长文阅读的节奏。</p></section>
+            <section class="settings-section"><h2>Thinking level</h2><mat-select data-preview-shell="select"><select aria-label="思考级别"><option>High</option><option>Medium</option></select></mat-select></section>
+            <section class="settings-section"><h2>Tools</h2><label class="setting-toggle"><input type="checkbox">结构化输出</label></section>
+        </ms-run-settings></ms-right-side-panel>
+    </div></ms-app></app-root>
+</body>
+</html>
