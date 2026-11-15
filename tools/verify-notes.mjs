@@ -328,6 +328,81 @@ async function noteDraft(page) {
     });
 }
 
+async function wrappedTableFixture(page, kind, selector = '.model .turn-content') {
+    return page.locator(selector).first().evaluate((content, kind) => {
+        const node = (tag, text = '', attrs = {}) => {
+            const result = document.createElement(tag);
+            result.textContent = text;
+            for (const [key, value] of Object.entries(attrs)) result.setAttribute(key, value);
+            return result;
+        };
+        const wrap = child => {
+            const component = node('ms-cmark-node');
+            component.append(child);
+            return component;
+        };
+        const row = (cells, directFirst = false) => {
+            const result = node('tr');
+            result.append(...cells.map((cell, index) => directFirst && index === 0 ? cell : wrap(cell)));
+            return result;
+        };
+        const math = (tex, display = false) => {
+            const result = node('ms-katex', '', { class: display ? 'katex-display' : 'inline' });
+            result.append(node('annotation', tex, { encoding: 'application/x-tex' }));
+            return result;
+        };
+        const table = node('table');
+        table.append(wrap(node('caption', '包装表格唯一标题')));
+        const headerless = kind === 'headerless';
+        if (kind === 'simple' || headerless) {
+            const heading = node(headerless ? 'tbody' : 'thead');
+            heading.append(wrap(row(['层级', '核心概念', '示例'].map(text => node(headerless ? 'td' : 'th', text)))));
+            const body = node('tbody');
+            const strong = node('td');
+            strong.append(wrap(node('strong', '商品经济唯一重点')));
+            const reference = node('td');
+            reference.append(wrap(node('a', '参考资料唯一链接', { href: 'https://example.org/tables?q=1&lang=zh' })));
+            body.append(wrap(row([node('td', 'L1 唯一层级'), strong, reference], true)));
+            const formula = node('td');
+            formula.append(wrap(math('x + y = 2')));
+            body.append(wrap(row([node('td', 'L2 唯一层级'), node('td', 'a | b'), formula])));
+            table.append(wrap(heading), wrap(body));
+        } else if (kind === 'complex') {
+            const header = row([node('th', '外表代码唯一标题', { colspan: '2' })]);
+            const code = node('td');
+            const pre = node('pre');
+            pre.append(node('code', 'const retained = "\\\\|x\\\\|";\n\nconsole.log(retained);\n', { class: 'language-javascript' }));
+            code.append(wrap(pre));
+            const nestedCell = node('td');
+            nestedCell.append(wrap(math('\\left\\|x\\right\\| = 1', true)));
+            const nested = node('table');
+            nested.append(wrap(row([node('th', '内表唯一列甲'), node('th', '内表唯一列乙')])));
+            nested.append(wrap(row([node('td', '内表唯一数据甲'), node('td', '内表唯一数据乙')])));
+            nestedCell.append(wrap(nested));
+            table.append(wrap(header), wrap(row([code, nestedCell])));
+        } else if (kind === 'no-rows') {
+            table.append(wrap(node('p', '无行表格正文不可丢失')));
+        } else if (kind === 'no-cells') {
+            const broken = node('tr');
+            broken.append(wrap(node('p', '零单元格行正文不可丢失')));
+            table.append(wrap(broken));
+        } else {
+            table.append(wrap(row([node('td', '已识别单元格甲'), node('td', '已识别单元格乙')])));
+            table.append(wrap(node(kind === 'orphan-cell' ? 'td' : 'p', '表内未归属正文不可丢失')));
+        }
+        const chunk = node('ms-text-chunk');
+        const markdown = node('ms-cmark-node');
+        markdown.append(node('h2', '表格提取验证'), wrap(table));
+        chunk.append(markdown);
+        content.replaceChildren(chunk);
+        // DOM API 保留组件层级；HTML 字符串解析会提前修正表格，无法复现实际缺陷。
+        return [...table.querySelectorAll('tr')].filter(value => value.closest('table') === table).map(value => ({
+            nativeCells: value.cells.length,
+            descendants: value.querySelectorAll('th, td').length
+        }));
+    }, kind);
+}
+
 async function questionInputFixture(page, questions) {
     await page.evaluate(questions => {
         const node = (tag, attrs = {}, text = '') => {
@@ -1019,6 +1094,145 @@ export async function verifyNotes({ context, check, syntheticPage, artifactDir, 
             }
         });
     }
+
+    await check('组件包裹和直接单元格混排的表格实际下载渲染完整，表头与无表头结构均保留', async () => {
+        for (const kind of ['simple', 'headerless']) {
+            const tablePage = await syntheticPage(null, '/prompts/wrapped-table-' + kind);
+            try {
+                const structure = await wrappedTableFixture(tablePage, kind);
+                assert.deepEqual(structure, [
+                    { nativeCells: 0, descendants: 3 }, { nativeCells: 1, descendants: 3 }, { nativeCells: 0, descendants: 3 }
+                ], '组件包装没有覆盖原生 cells 遗漏的实际结构');
+                await openNotes(tablePage);
+                assert(await tablePage.locator(ids.error).isHidden());
+                assert(await tablePage.locator(ids.warning).isHidden(), '普通组件包装不应被当作复杂表格');
+                const file = await downloadMarkdown(tablePage, scratch, 'wrapped-table-' + kind + '.md');
+                for (const unique of ['包装表格唯一标题', 'L1 唯一层级', '商品经济唯一重点', '参考资料唯一链接', 'L2 唯一层级']) {
+                    assert.equal(file.text.split(unique).length - 1, 1, unique + '未完整保留或被重复提取');
+                }
+                assert(file.text.includes('**商品经济唯一重点**'));
+                assert(file.text.includes('a \\| b'));
+                assert(file.text.includes('$x + y = 2$'));
+                assert(!/^\|\s*\|$/m.test(file.text), '导出仍含零列表格');
+                await withRenderedMarkdown(context, harness, file, async rendered => {
+                    assert.equal(await rendered.locator('table').count(), 1);
+                    assert.deepEqual(await rendered.locator('thead th').allTextContents(), kind === 'simple' ? ['层级', '核心概念', '示例'] : ['', '', '']);
+                    assert.equal(await rendered.locator('tbody tr').count(), kind === 'simple' ? 2 : 3);
+                    for (const row of await rendered.locator('tbody tr').all()) assert.equal(await row.locator('td').count(), 3);
+                    const data = await rendered.locator('tbody tr').all();
+                    const offset = kind === 'simple' ? 0 : 1;
+                    if (offset) assert.deepEqual(await data[0].locator('td').allTextContents(), ['层级', '核心概念', '示例']);
+                    assert.deepEqual(await data[offset].locator('td').allTextContents(), ['L1 唯一层级', '商品经济唯一重点', '参考资料唯一链接']);
+                    assert.equal(await data[offset].locator('strong').textContent(), '商品经济唯一重点');
+                    assert.equal(await data[offset].locator('a').getAttribute('href'), 'https://example.org/tables?q=1&lang=zh');
+                    assert.deepEqual(await data[offset + 1].locator('td').allTextContents().then(values => values.slice(0, 2)), ['L2 唯一层级', 'a | b']);
+                    assert.equal(await data[offset + 1].locator('annotation[encoding="application/x-tex"]').textContent(), 'x + y = 2');
+                    if (kind === 'simple') await rendered.screenshot({ path: path.join(artifactDir, '包装表格实际渲染.png') });
+                });
+            } finally {
+                await tablePage.close();
+            }
+        }
+    });
+
+    await check('隐藏单元格保留原列位置且不提取隐藏文字，隐藏表格行不进入实际下载与渲染', async () => {
+        for (const attribute of ['hidden', 'aria-hidden']) {
+            const tablePage = await syntheticPage(null, '/prompts/hidden-table-' + attribute);
+            try {
+                await wrappedTableFixture(tablePage, 'simple');
+                await tablePage.locator('.model .turn-content table').first().evaluate((table, attribute) => {
+                    const rows = [...table.querySelectorAll('tr')].filter(row => row.closest('table') === table);
+                    const middle = rows[2].querySelectorAll('td')[1].parentElement;
+                    middle.setAttribute(attribute, attribute === 'hidden' ? '' : 'true');
+                    const hiddenRow = document.createElement('tr');
+                    for (const text of ['隐藏整行唯一甲', '隐藏整行唯一乙', '隐藏整行唯一丙']) {
+                        const cell = document.createElement('td');
+                        cell.textContent = text;
+                        const wrapper = document.createElement('ms-cmark-node');
+                        wrapper.append(cell);
+                        hiddenRow.append(wrapper);
+                    }
+                    const rowWrapper = document.createElement('ms-cmark-node');
+                    rowWrapper.setAttribute(attribute, attribute === 'hidden' ? '' : 'true');
+                    rowWrapper.append(hiddenRow);
+                    table.append(rowWrapper);
+                }, attribute);
+                await openNotes(tablePage);
+                assert(await tablePage.locator(ids.error).isHidden());
+                assert(await tablePage.locator(ids.warning).isHidden());
+                const file = await downloadMarkdown(tablePage, scratch, 'hidden-table-' + attribute + '.md');
+                assert(!file.text.includes('a \\| b'), '隐藏单元格文字进入了导出');
+                assert(!file.text.includes('隐藏整行唯一'), '隐藏表格行进入了导出');
+                await withRenderedMarkdown(context, harness, file, async rendered => {
+                    assert.deepEqual(await rendered.locator('thead th').allTextContents(), ['层级', '核心概念', '示例']);
+                    assert.equal(await rendered.locator('tbody tr').count(), 2, '隐藏行占据了输出行');
+                    const last = rendered.locator('tbody tr').last();
+                    assert.equal(await last.locator('td').count(), 3, '隐藏单元格改变了原始列数');
+                    assert.equal(await last.locator('td').nth(0).textContent(), 'L2 唯一层级');
+                    assert.equal(await last.locator('td').nth(1).textContent(), '', '隐藏单元格后面的内容左移');
+                    assert.equal(await last.locator('td').nth(2).locator('annotation[encoding="application/x-tex"]').textContent(), 'x + y = 2');
+                });
+            } finally {
+                await tablePage.close();
+            }
+        }
+    });
+
+    await check('组件包裹的复杂单元格和嵌套表格保留全部代码公式与唯一内容，内表不计入外表列', async () => {
+        const tablePage = await syntheticPage(null, '/prompts/wrapped-complex-table');
+        try {
+            const structure = await wrappedTableFixture(tablePage, 'complex');
+            assert.deepEqual(structure.map(row => row.nativeCells), [0, 0]);
+            await openNotes(tablePage);
+            assert(await tablePage.locator(ids.error).isHidden());
+            assert(await tablePage.locator(ids.warning).isVisible());
+            assert.match(await tablePage.locator(ids.warning).textContent(), /表格/);
+            const file = await downloadMarkdown(tablePage, scratch, 'wrapped-complex-table.md');
+            for (const unique of ['包装表格唯一标题', '外表代码唯一标题', '内表唯一列甲', '内表唯一列乙', '内表唯一数据甲', '内表唯一数据乙']) {
+                assert.equal(file.text.split(unique).length - 1, 1, unique + '被遗漏或错误计入外表后重复提取');
+            }
+            assert.equal(file.text.split('第 2 行').length - 1, 1, '内表行被计入外表');
+            assert(!file.text.includes('第 3 列'), '内表单元格被计入外表');
+            await withRenderedMarkdown(context, harness, file, async rendered => {
+                assert.equal((await rendered.locator('pre code').textContent()).replace(/\n$/, ''), 'const retained = "\\\\|x\\\\|";\n\nconsole.log(retained);');
+                assert.equal(await rendered.locator('.katex-display').count(), 1);
+                assert.equal(await rendered.locator('annotation[encoding="application/x-tex"]').textContent(), '\\left\\|x\\right\\| = 1');
+                assert.equal(await rendered.locator('table').count(), 1, '内表应保留为独立可渲染表格');
+                assert.deepEqual(await rendered.locator('thead th').allTextContents(), ['内表唯一列甲', '内表唯一列乙']);
+                assert.deepEqual(await rendered.locator('tbody td').allTextContents(), ['内表唯一数据甲', '内表唯一数据乙']);
+            });
+        } finally {
+            await tablePage.close();
+        }
+    });
+
+    await check('无行零列和未归属正文的损坏表格明确拒绝提取，切换失败保留完整草稿与来源', async () => {
+        for (const kind of ['no-rows', 'no-cells', 'stray-text', 'orphan-cell']) {
+            const tablePage = await syntheticPage(null, '/prompts/broken-table-' + kind);
+            try {
+                await replaceConversation(tablePage);
+                await openNotes(tablePage);
+                await tablePage.locator(ids.title).fill('表格失败后保留的标题');
+                await tablePage.locator(ids.tags).fill('表格,草稿');
+                await tablePage.locator(ids.body).fill('表格失败后保留的完整手工正文。');
+                const before = await noteDraft(tablePage);
+                await wrappedTableFixture(tablePage, kind);
+                const pending = tablePage.waitForEvent('dialog');
+                const select = tablePage.locator(ids.answer).selectOption('0');
+                await (await pending).accept();
+                await select;
+                assert(await tablePage.locator(ids.error).isVisible(), kind + '未显式失败');
+                assert.match(await tablePage.locator(ids.error).textContent(), /表格|单元格|结构/);
+                assert.deepEqual(await noteDraft(tablePage), before, kind + '失败破坏了草稿或选择');
+                const file = await downloadMarkdown(tablePage, scratch, 'broken-table-' + kind + '-retained.md');
+                assert(file.text.includes('表格失败后保留的完整手工正文。'));
+                assert(file.text.includes('/prompts/broken-table-' + kind));
+                assert(!file.text.includes('不可丢失'), '失败表格取代了保留草稿');
+            } finally {
+                await tablePage.close();
+            }
+        }
+    });
 
     await check('复杂表格与异常编号实际渲染保留块内容和原编号，并明确提示核对', async () => {
         const edge = await syntheticPage(null, '/prompts/markdown-boundaries');

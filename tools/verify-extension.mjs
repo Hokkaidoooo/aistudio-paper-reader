@@ -6,6 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkGfm from 'remark-gfm';
 
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let extensionPath = path.resolve(workspace, process.env.AIR_EXTENSION_PATH || 'extension');
@@ -188,7 +191,20 @@ try {
         await page.getByRole('button', { name: '关闭阅读设置', exact: true }).click();
     });
 
-    await check('真实 popup 消息打开问答，下载实际 UTF-8 Markdown 并核对完整正文', async () => {
+    await check('真实 popup 打开问答并下载 UTF-8 Markdown，组件包裹表格的全部行列完整', async () => {
+        const expectedTable = await page.locator('.model table').evaluate(table => {
+            const rows = [...table.querySelectorAll('tr')];
+            const values = rows.map(row => [...row.cells].map(cell => cell.textContent));
+            for (const row of rows) {
+                for (const cell of [...row.cells]) {
+                    const wrapper = document.createElement('ms-cmark-node');
+                    cell.replaceWith(wrapper);
+                    wrapper.append(cell);
+                }
+                if (row.cells.length !== 0) throw new Error('组件包装没有形成零原生 cells 的回归场景');
+            }
+            return values;
+        });
         const popup = await openPopup(extensionId, page);
         try {
             await popup.locator('#record-note').evaluate(button => button.click());
@@ -217,6 +233,14 @@ try {
         const saved = await readFile(destination, 'utf8');
         assert.equal(saved, preview);
         assert(saved.includes(body.trim()));
+        const tables = unified().use(remarkParse).use(remarkGfm).parse(saved).children.filter(node => node.type === 'table');
+        assert.equal(tables.length, 1, '实际扩展下载中表格必须能被 Markdown 解析');
+        const actualTable = tables[0].children.map(row => row.children.map(cell => cell.children.map(part => {
+            assert.equal(part.type, 'text');
+            return part.value;
+        }).join('')));
+        assert.deepEqual(actualTable, expectedTable, '真实扩展提取遗漏单元格或改变行列归属');
+        report.table = { rows: actualTable.length, columns: actualTable[0].length, cellsMatch: true };
         assert.match(saved, /source: "https:\/\/aistudio\.google\.com\/prompts\/offline-fixture"/);
         report.download = { filename: download.suggestedFilename(), bytes: Buffer.byteLength(saved), sha256: createHash('sha256').update(saved).digest('hex') };
     });

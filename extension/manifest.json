@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Studio 纸间阅读",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "舒适阅读 AI Studio 长回答，将一对问答和引用链接导出为适合 Typora、Obsidian 的 Markdown 笔记。",
   "permissions": [
     "storage"

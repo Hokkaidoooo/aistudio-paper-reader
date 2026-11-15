@@ -596,32 +596,40 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
         }
 
         function table(node) {
-            const rows = [...node.querySelectorAll('tr')].filter(row => row.closest('table') === node);
-            if (!rows.length) {
-                warnings.add('检测到无法识别的表格，请在保存前核对。');
-                return block(children(node));
+            // cmark 可在行和单元格之间插入组件；按语义归属取列，避免原生 row.cells 漏读。
+            const rows = [...node.querySelectorAll('tr')].filter(row => row.closest('table') === node && visibleNoteContent(row))
+                .map(row => [...row.querySelectorAll('th, td')].filter(cell => cell.closest('tr') === row
+                    && cell.closest('table') === node));
+            if (!rows.length) throw new Error('未识别到表格行，无法完整提取这条回答；请核对原表格。');
+            const emptyRow = rows.findIndex(cells => !cells.length);
+            if (emptyRow !== -1) throw new Error(`表格第 ${emptyRow + 1} 行未识别到单元格，已停止提取；请核对原表格。`);
+            const captions = [...node.querySelectorAll('caption')].filter(caption => caption.closest('table') === node && visibleNoteContent(caption));
+            if (hasUnreadContent(node, new Set([...rows.flat(), ...captions]))) {
+                throw new Error('表格中存在未归属到行列的内容，无法完整提取这条回答；请核对原表格。');
             }
-            const caption = node.querySelector(':scope > caption');
-            const captionText = caption ? block(children(caption)) : '';
+            const captionText = join(captions.map(caption => block(children(caption))));
+            // 隐藏单元格仍占原列，避免后续内容被错配到前面的表头。
+            const cellContent = cell => visibleNoteContent(cell) ? children(cell).trim() : '';
             const blockContent = 'pre, ul, ol, ms-code-block, .katex-display, ms-katex.display, ms-katex.block, ms-katex[display="true"], ms-katex[display="block"], ms-katex[data-display="true"], mjx-container[display="true"], mjx-container[display="block"], math[display="block"], script[type*="mode=display"], script[type*="mode= display"]';
             const unsafeCell = cell => cell.colSpan !== 1 || cell.rowSpan !== 1 || cell.querySelector(blockContent) !== null
                 || [...cell.querySelectorAll('code, pre, annotation[encoding="application/x-tex"], [data-tex], [data-latex]')]
                     .some(part => /\\\|/.test(part.textContent + (part.getAttribute('data-tex') || '') + (part.getAttribute('data-latex') || '')));
-            const complex = rows.some(row => [...row.cells].some(unsafeCell)) || node.querySelector('table') !== null;
+            const complex = rows.some(row => row.some(cell => visibleNoteContent(cell) && unsafeCell(cell)))
+                || [...node.querySelectorAll('table')].some(visibleNoteContent);
             if (complex) {
                 warnings.add('表格包含合并单元格、嵌套或多行结构，或无法准确转义的代码与公式，已按行和列保留内容；请手动整理表格结构。');
                 const content = rows.map((row, rowIndex) => {
-                    const values = [...row.cells].map((cell, cellIndex) => `第 ${cellIndex + 1} 列\n\n${children(cell).trim()}`);
+                    const values = row.map((cell, cellIndex) => `第 ${cellIndex + 1} 列\n\n${cellContent(cell)}`);
                     return `第 ${rowIndex + 1} 行\n\n${values.join('\n\n')}`;
                 }).join('\n\n');
                 return join([captionText, block(content)]);
             }
-            const width = Math.max(...rows.map(row => row.cells.length));
+            const width = Math.max(...rows.map(row => row.length));
             const cells = rows.map(row => Array.from({ length: width }, (_, index) => {
-                const cell = row.cells[index];
-                return cell ? children(cell).trim().replace(/\n+/g, '<br>').replace(/(?<!\\)\|/g, '\\|') : '';
+                const cell = row[index];
+                return cell ? cellContent(cell).replace(/\n+/g, '<br>').replace(/(?<!\\)\|/g, '\\|') : '';
             }));
-            const hasHeader = [...rows[0].cells].some(cell => cell.localName === 'th');
+            const hasHeader = rows[0].some(cell => cell.localName === 'th');
             const head = hasHeader ? cells.shift() : Array(width).fill('');
             const line = row => `| ${row.join(' | ')} |`;
             return join([captionText, block([line(head), line(Array(width).fill('---')), ...cells.map(line)].join('\n'))]);
