@@ -4,7 +4,7 @@
 
 ## 安装
 
-1. 从 [Releases](https://github.com/Hokkaidoooo/aistudio-paper-reader/releases/latest) 下载 `aistudio-paper-reader-2.0.1.zip`，解压到一个固定文件夹。
+1. 从 [Releases](https://github.com/Hokkaidoooo/aistudio-paper-reader/releases/latest) 下载 `aistudio-paper-reader-2.0.2.zip`，解压到一个固定文件夹。
 2. 打开 `chrome://extensions` 或 `edge://extensions`，开启「开发者模式」。
 3. 点击「加载已解压的扩展程序」，选择含有 `manifest.json` 的文件夹。
 4. 如果装过旧版「AI Studio 纸间阅读」油猴脚本，先停用它，避免重复运行。
@@ -20,7 +20,7 @@
 
 点击「记录问答」，选择一对问答，检查标题、标签和 Markdown 正文，再点击「选择位置并保存」或「下载 Markdown」。首次保存请选择自己的笔记目录。关闭面板会保留草稿，刷新或关闭网页前请先保存。
 
-- 导出完整问题和 AI 回答，支持标题、引用链接、列表、代码、普通表格与可取得 LaTeX 源码的公式。
+- 导出完整问题和 AI 回答，支持标题、引用链接、列表、代码、含多段文字和列表的表格，以及可取得 LaTeX 源码的公式。
 - 引用编号使用普通方括号，避免 Typora 将引用链接识别为公式。
 - 缺少公式源码、附件或复杂表格时，面板会提示需要核对的内容。
 - 表格正文无法完整识别时会停止提取并保留已有草稿。

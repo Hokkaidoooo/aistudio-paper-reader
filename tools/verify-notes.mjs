@@ -367,6 +367,59 @@ async function wrappedTableFixture(page, kind, selector = '.model .turn-content'
             formula.append(wrap(math('x + y = 2')));
             body.append(wrap(row([node('td', 'L2 唯一层级'), node('td', 'a | b'), formula])));
             table.append(wrap(heading), wrap(body));
+        } else if (kind === 'multiline-lists') {
+            const header = row(['比较维度', '方案甲', '方案乙', '说明'].map(text => node('th', text)));
+            const ordinary = node('td');
+            const bullets = node('ul');
+            const first = node('li');
+            const firstParagraph = node('p', '普通列表唯一首项：');
+            firstParagraph.append(wrap(node('strong', '列表唯一粗体')));
+            first.append(wrap(firstParagraph));
+            const second = node('li');
+            second.append(wrap(node('p', '普通列表唯一次项')), wrap(node('p', '条目续段唯一说明')));
+            const nested = node('ul');
+            nested.append(wrap(node('li', '嵌套列表唯一子项')));
+            second.append(wrap(nested));
+            bullets.append(wrap(first), wrap(second));
+            ordinary.append(wrap(bullets));
+            const numbered = node('td');
+            const ordered = node('ol', '', { start: '3' });
+            for (const text of ['有序列表唯一首项', '有序列表唯一次项']) {
+                const item = node('li');
+                item.append(wrap(node('p', text)));
+                ordered.append(wrap(item));
+            }
+            numbered.append(wrap(ordered));
+            const explanation = node('td');
+            const paragraph = node('p', '换行唯一上段');
+            const inlineFormula = node('ms-katex', '', { class: 'inline' });
+            const formulaPre = node('pre');
+            const formulaCode = node('code', '', { class: 'rendered' });
+            const katex = node('span', '', { class: 'katex' });
+            const sourceMath = node('math', '', { hidden: '' });
+            const semantics = node('semantics');
+            semantics.append(node('annotation', 'a + b = c', { encoding: 'application/x-tex' }));
+            sourceMath.append(semantics);
+            katex.append(node('span', '公式视觉副本不可重复导出', { class: 'katex-html' }), sourceMath);
+            formulaCode.append(katex);
+            formulaPre.append(formulaCode);
+            inlineFormula.append(formulaPre);
+            paragraph.append(node('br'), '换行唯一下段 ', wrap(inlineFormula), ' [');
+            paragraph.append(wrap(node('a', '四列表唯一引用甲', { href: 'https://example.org/multiline?lang=zh&q=table' })), ']');
+            explanation.append(wrap(paragraph));
+            const secondListCell = node('td');
+            const secondList = node('ul');
+            secondList.append(wrap(node('li', '第二行列表唯一甲')), wrap(node('li', '第二行列表唯一乙')));
+            secondListCell.append(wrap(secondList));
+            const paragraphs = node('td');
+            paragraphs.append(wrap(node('p', '独立段落唯一甲')), wrap(node('p', '独立段落唯一乙')));
+            const secondExplanation = node('td');
+            secondExplanation.append(wrap(node('strong', '第二行唯一重点')), ' [');
+            secondExplanation.append(wrap(node('a', '四列表唯一引用乙', { href: 'https://example.org/notes?section=2&lang=zh' })), ']');
+            const body = node('tbody');
+            body.append(wrap(row([node('td', '第一项唯一维度'), ordinary, numbered, explanation])));
+            body.append(wrap(row([node('td', '第二项唯一维度'), secondListCell, paragraphs, secondExplanation], true)));
+            table.append(wrap(header), wrap(body));
         } else if (kind === 'complex') {
             const header = row([node('th', '外表代码唯一标题', { colspan: '2' })]);
             const code = node('td');
@@ -1132,6 +1185,163 @@ export async function verifyNotes({ context, check, syntheticPage, artifactDir, 
             } finally {
                 await tablePage.close();
             }
+        }
+    });
+
+    await check('四列表格中的普通嵌套列表编号多段文字与引用公式保留在原单元格，实际渲染换行', async () => {
+        const tablePage = await syntheticPage(null, '/prompts/four-column-multiline-table');
+        const uniqueText = [
+            '包装表格唯一标题', '第一项唯一维度', '普通列表唯一首项', '列表唯一粗体', '普通列表唯一次项',
+            '条目续段唯一说明', '嵌套列表唯一子项', '有序列表唯一首项', '有序列表唯一次项',
+            '换行唯一上段', '换行唯一下段', '四列表唯一引用甲', '第二项唯一维度', '第二行列表唯一甲',
+            '第二行列表唯一乙', '独立段落唯一甲', '独立段落唯一乙', '第二行唯一重点', '四列表唯一引用乙'
+        ];
+        try {
+            const structure = await wrappedTableFixture(tablePage, 'multiline-lists');
+            assert.deepEqual(structure, [
+                { nativeCells: 0, descendants: 4 }, { nativeCells: 0, descendants: 4 }, { nativeCells: 1, descendants: 4 }
+            ]);
+            await openNotes(tablePage);
+            assert(await tablePage.locator(ids.error).isHidden());
+            assert(await tablePage.locator(ids.warning).isHidden(), '普通表内列表被误判为需要展开的复杂表格');
+            const file = await downloadMarkdown(tablePage, scratch, 'four-column-multiline-table.md');
+            for (const unique of uniqueText) assert.equal(file.text.split(unique).length - 1, 1, unique + '被遗漏或重复导出');
+            assert(!/第\s*1\s*行|第\s*1\s*列/.test(file.text), '普通表内列表触发表格展开');
+            const lines = file.text.split('\n').filter(line => line.startsWith('|'));
+            assert.equal(lines.length, 4, '表头分隔与两数据行没有保留为同一张表');
+            for (const line of lines) assert.equal(line.match(/(?<!\\)\|/g)?.length, 5, '表内换行破坏了四列结构');
+            assert(file.text.includes('<br>'), '多行单元格缺少可渲染换行');
+            assert(file.text.includes('**列表唯一粗体**') && file.text.includes('**第二行唯一重点**'));
+            assert(file.text.includes('$a + b = c$'));
+            await withRenderedMarkdown(context, harness, file, async rendered => {
+                assert.equal(await rendered.locator('table').count(), 1);
+                assert.deepEqual(await rendered.locator('thead th').allTextContents(), ['比较维度', '方案甲', '方案乙', '说明']);
+                const rows = await rendered.locator('tbody tr').all();
+                assert.equal(rows.length, 2);
+                for (const row of rows) assert.equal(await row.locator('td').count(), 4);
+                const bullets = rows[0].locator('td').nth(1);
+                assert((await bullets.locator('br').count()) >= 3, '列表和条目续段的换行没有进入渲染结果');
+                const bulletText = await bullets.textContent();
+                for (const text of ['普通列表唯一首项', '普通列表唯一次项', '嵌套列表唯一子项']) {
+                    assert.match(bulletText, new RegExp('•\\s*' + text), '列表项目标记没有保留在原单元格');
+                }
+                const numbered = rows[0].locator('td').nth(2);
+                assert((await numbered.locator('br').count()) >= 1);
+                assert.match(await numbered.textContent(), /3[.)]\s*有序列表唯一首项/);
+                assert.match(await numbered.textContent(), /4[.)]\s*有序列表唯一次项/);
+                const explanation = rows[0].locator('td').nth(3);
+                assert((await explanation.locator('br').count()) >= 1);
+                assert.equal(await explanation.locator('annotation[encoding="application/x-tex"]').textContent(), 'a + b = c');
+                assert.equal(await explanation.locator('a').getAttribute('href'), 'https://example.org/multiline?lang=zh&q=table');
+                assert((await rows[1].locator('td').nth(2).locator('br').count()) >= 1, '独立段落被合成同一行');
+                assert.deepEqual(await rendered.locator('table strong').allTextContents(), ['列表唯一粗体', '第二行唯一重点']);
+                assert.equal(await rows[1].locator('td').nth(3).locator('a').getAttribute('href'), 'https://example.org/notes?section=2&lang=zh');
+                assert.equal(await rendered.locator('table ul, table ol').count(), 0, '表内列表未转换为单元格内的项目与换行');
+                const text = await rendered.locator('body').textContent();
+                for (const unique of uniqueText) assert.equal(text.split(unique).length - 1, 1, unique + '渲染后被遗漏或重复');
+                await rendered.screenshot({ path: path.join(artifactDir, '四列表格多行实际渲染.png') });
+            });
+        } finally {
+            await tablePage.close();
+        }
+    });
+
+    await check('AI Studio行内公式的pre代码包装和隐藏代码副本不使表格展开，LaTeX只提取一次', async () => {
+        const tablePage = await syntheticPage(null, '/prompts/inline-formula-table');
+        try {
+            await wrappedTableFixture(tablePage, 'multiline-lists');
+            const formulaSource = tablePage.locator('ms-katex.inline > pre > code.rendered > span.katex > math[hidden] > semantics > annotation');
+            assert.equal(await formulaSource.count(), 1, '缺少真实行内公式的pre与隐藏MathML结构');
+            assert.equal(await formulaSource.textContent(), 'a + b = c');
+            await tablePage.locator('.model .turn-content table').first().evaluate(table => {
+                const cell = table.querySelectorAll('td')[6];
+                const pre = document.createElement('pre');
+                pre.hidden = true;
+                const code = document.createElement('code');
+                code.textContent = '隐藏代码副本不可导出';
+                pre.append(code);
+                const hiddenFormula = document.createElement('ms-katex');
+                hiddenFormula.hidden = true;
+                hiddenFormula.setAttribute('data-tex', 'x_{hidden} = 701');
+                const ariaFormula = document.createElement('ms-katex');
+                ariaFormula.setAttribute('aria-hidden', 'true');
+                ariaFormula.setAttribute('data-tex', 'x_{aria} = 702');
+                cell.append(pre, hiddenFormula, ariaFormula);
+            });
+            await openNotes(tablePage);
+            assert(await tablePage.locator(ids.error).isHidden());
+            assert(await tablePage.locator(ids.warning).isHidden(), '行内公式包装或隐藏pre触发了块内容判定');
+            const file = await downloadMarkdown(tablePage, scratch, 'inline-formula-table.md');
+            assert.equal(file.text.split('$a + b = c$').length - 1, 1, 'LaTeX缺失或被视觉层重复导出');
+            assert(!file.text.includes('公式视觉副本不可重复导出'));
+            assert(!file.text.includes('隐藏代码副本不可导出'));
+            assert(!file.text.includes('x_{hidden} = 701'), '独立hidden公式进入了导出');
+            assert(!file.text.includes('x_{aria} = 702'), '独立aria-hidden公式进入了导出');
+            assert(!/第\s*1\s*行|第\s*1\s*列/.test(file.text));
+            await withRenderedMarkdown(context, harness, file, async rendered => {
+                assert.equal(await rendered.locator('table').count(), 1);
+                assert.equal(await rendered.locator('thead th').count(), 4);
+                assert.equal(await rendered.locator('tbody tr').count(), 2);
+                for (const row of await rendered.locator('tbody tr').all()) assert.equal(await row.locator('td').count(), 4);
+                assert.equal(await rendered.locator('table .katex').count(), 1);
+                assert.deepEqual(await rendered.locator('annotation[encoding="application/x-tex"]').allTextContents(), ['a + b = c']);
+                assert.equal(await rendered.locator('pre').count(), 0, '公式或隐藏代码被作为可见代码块输出');
+            });
+        } finally {
+            await tablePage.close();
+        }
+    });
+
+    await check('表内行内公式源码的换行与行尾注释完整保留，明确提示复杂结构且实际渲染不改写源码', async () => {
+        const tablePage = await syntheticPage(null, '/prompts/multiline-inline-source-table');
+        const source = 'a + % 保留注释\nb = c';
+        try {
+            await tablePage.locator('.model .turn-content').evaluate((content, source) => {
+                const node = (tag, text = '', attrs = {}) => {
+                    const result = document.createElement(tag);
+                    result.textContent = text;
+                    for (const [key, value] of Object.entries(attrs)) result.setAttribute(key, value);
+                    return result;
+                };
+                const formula = node('ms-katex', '', { class: 'inline' });
+                const pre = node('pre');
+                const code = node('code', '', { class: 'rendered' });
+                const katex = node('span', '', { class: 'katex' });
+                const math = node('math', '', { hidden: '' });
+                const semantics = node('semantics');
+                semantics.append(node('annotation', source, { encoding: 'application/x-tex' }));
+                math.append(semantics);
+                katex.append(node('span', '多行源码视觉副本不可导出', { class: 'katex-html' }), math);
+                code.append(katex);
+                pre.append(code);
+                formula.append(pre);
+                const table = node('table');
+                const header = node('tr');
+                header.append(node('th', '项目'), node('th', '公式'));
+                const row = node('tr');
+                const cell = node('td');
+                cell.append(formula);
+                row.append(node('td', '源码边界唯一项'), cell);
+                table.append(header, row);
+                const chunk = node('ms-text-chunk');
+                chunk.append(table);
+                content.replaceChildren(chunk);
+            }, source);
+            await openNotes(tablePage);
+            assert(await tablePage.locator(ids.error).isHidden());
+            assert(await tablePage.locator(ids.warning).isVisible());
+            assert.match(await tablePage.locator(ids.warning).textContent(), /表格/);
+            const file = await downloadMarkdown(tablePage, scratch, 'multiline-inline-source-table.md');
+            assert.equal(file.text.split(source).length - 1, 1, '多行公式原文被遗漏或重复');
+            assert(!file.text.includes('$' + source.replace(/\r?\n/g, '<br>') + '$'), '公式源码换行被改写成HTML换行');
+            assert(!file.text.includes('多行源码视觉副本不可导出'));
+            await withRenderedMarkdown(context, harness, file, async rendered => {
+                assert.equal(await rendered.locator('.katex').count(), 1);
+                assert.deepEqual(await rendered.locator('annotation[encoding="application/x-tex"]').allTextContents(), [source], '实际渲染改变了公式换行或行尾注释');
+                assert((await rendered.locator('body').textContent()).includes('源码边界唯一项'));
+            });
+        } finally {
+            await tablePage.close();
         }
     });
 

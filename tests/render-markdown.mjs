@@ -30,7 +30,11 @@ export function createMarkdownHarness() {
         .use(remarkGfm)
         .use(remarkMath)
         .use(remarkSmartypants)
-        .use(remarkRehype)
+        .use(remarkRehype, { handlers: {
+            html(_state, node) {
+                if (/^<br\s*\/?>$/i.test(node.value)) return { type: 'element', tagName: 'br', properties: {}, children: [] };
+            }
+        } })
         .use(rehypeKatex)
         .use(rehypeStringify);
     function parse(text) {

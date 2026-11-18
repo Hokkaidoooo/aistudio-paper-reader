@@ -9,6 +9,7 @@ import { unzipSync } from 'fflate';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let extensionPath = path.resolve(workspace, process.env.AIR_EXTENSION_PATH || 'extension');
@@ -350,6 +351,103 @@ try {
         assert(geometry.scrollWidth <= geometry.clientWidth, JSON.stringify(geometry));
         await page.screenshot({ path: path.join(artifactDir, 'extension-note-mobile.png') });
         report.mobilePanel = geometry;
+    });
+
+    await check('最终ZIP真实扩展经popup记录并下载多行表格，列表粗体引用和行内公式保留原列', async () => {
+        const tablePage = await context.newPage();
+        try {
+            await tablePage.goto(fixtureUrl);
+            await waitForReader(tablePage);
+            await tablePage.locator('.model .turn-content').evaluate(content => {
+                const node = (tag, text = '', attrs = {}) => {
+                    const result = document.createElement(tag);
+                    result.textContent = text;
+                    for (const [key, value] of Object.entries(attrs)) result.setAttribute(key, value);
+                    return result;
+                };
+                const wrap = child => {
+                    const result = node('ms-cmark-node');
+                    result.append(child);
+                    return result;
+                };
+                const table = node('table');
+                const header = node('tr');
+                header.append(...['项目', '条目', '引用', '公式'].map(text => wrap(node('th', text))));
+                const listCell = node('td');
+                const list = node('ul');
+                const first = node('li');
+                first.append(wrap(node('strong', '扩展表格唯一重点')), node('br'), '首项续行唯一说明');
+                list.append(wrap(first), wrap(node('li', '扩展表格唯一次项')));
+                listCell.append(wrap(list));
+                const reference = node('td', '[');
+                reference.append(wrap(node('a', '扩展表格唯一引用', { href: 'https://example.org/zip-table?lang=zh&item=1' })), ']');
+                const formulaCell = node('td', '公式首行唯一前缀');
+                const formula = node('ms-katex', '', { class: 'inline' });
+                const pre = node('pre');
+                const code = node('code', '', { class: 'rendered' });
+                const katex = node('span', '', { class: 'katex' });
+                const math = node('math', '', { hidden: '' });
+                const semantics = node('semantics');
+                semantics.append(node('annotation', 'u + v = w', { encoding: 'application/x-tex' }));
+                math.append(semantics);
+                katex.append(node('span', '扩展公式视觉层不可导出', { class: 'katex-html' }), math);
+                code.append(katex);
+                pre.append(code);
+                formula.append(pre);
+                formulaCell.append(node('br'), wrap(formula));
+                const row = node('tr');
+                row.append(...[node('td', '扩展表格唯一维度'), listCell, reference, formulaCell].map(wrap));
+                table.append(wrap(header), wrap(row));
+                const chunk = node('ms-text-chunk');
+                chunk.append(wrap(table));
+                content.replaceChildren(chunk);
+                if (header.cells.length !== 0 || row.cells.length !== 0) throw new Error('最终扩展多行表格场景必须覆盖组件包装');
+            });
+            const popup = await openPopup(extensionId, tablePage);
+            try {
+                await popup.locator('#record-note').evaluate(button => button.click());
+                await tablePage.getByRole('dialog', { name: '记录问答', exact: true }).waitFor();
+            } finally {
+                if (!popup.isClosed()) await popup.close();
+            }
+            assert(await tablePage.locator('#note-error').isHidden(), await tablePage.locator('#note-error').textContent());
+            assert(await tablePage.locator('#note-warning').isHidden(), '普通表内列表或行内公式触发了复杂表格警告');
+            const pending = tablePage.waitForEvent('download');
+            await tablePage.locator('#note-download').click();
+            const download = await pending;
+            const destination = path.join(scratch, 'downloads', 'extension-multiline-table.md');
+            await download.saveAs(destination);
+            assert.equal(await download.failure(), null);
+            const bytes = await readFile(destination);
+            const saved = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            assert(!/第\s*1\s*行|第\s*1\s*列/.test(saved), '最终扩展把普通表格展开为逐行记录');
+            assert(!saved.includes('扩展公式视觉层不可导出'));
+            for (const text of ['扩展表格唯一维度', '扩展表格唯一重点', '首项续行唯一说明', '扩展表格唯一次项', '扩展表格唯一引用', '公式首行唯一前缀', 'u + v = w']) {
+                assert.equal(saved.split(text).length - 1, 1, text + '在真实下载中被遗漏或重复');
+            }
+            const tables = unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(saved).children.filter(node => node.type === 'table');
+            assert.equal(tables.length, 1);
+            assert.equal(tables[0].children.length, 2);
+            for (const row of tables[0].children) assert.equal(row.children.length, 4, '最终扩展下载改变了表格列数');
+            const descendants = node => [node, ...(node.children || []).flatMap(descendants)];
+            const data = tables[0].children[1].children.map(descendants);
+            assert.deepEqual(tables[0].children[0].children.map(cell => cell.children[0].value), ['项目', '条目', '引用', '公式']);
+            const listText = data[1].filter(node => node.type === 'text').map(node => node.value).join('');
+            assert.match(listText, /•\s*扩展表格唯一重点/);
+            assert.match(listText, /•\s*扩展表格唯一次项/);
+            assert.equal(data[1].filter(node => node.type === 'strong').length, 1);
+            assert(data[1].filter(node => node.type === 'html' && node.value === '<br>').length >= 2, '列表和续行没有保留单元格换行');
+            const links = data[2].filter(node => node.type === 'link');
+            assert.equal(links.length, 1);
+            assert.equal(links[0].url, 'https://example.org/zip-table?lang=zh&item=1');
+            assert.equal(links[0].children[0].value, '扩展表格唯一引用');
+            assert.deepEqual(data[3].filter(node => node.type === 'inlineMath').map(node => node.value), ['u + v = w']);
+            assert(data[3].some(node => node.type === 'html' && node.value === '<br>'));
+            assert.deepEqual(await tablePage.evaluate(() => window.__airCspViolations), []);
+            report.multilineTable = { rows: 2, columns: 4, listAndBreaksMatch: true, inlineMath: 'u + v = w', bytes: bytes.length };
+        } finally {
+            await tablePage.close();
+        }
     });
 
     await check('严格 CSP 零违规，扩展无未捕获异常，Google 与其它外网请求为零', async () => {

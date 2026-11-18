@@ -24,6 +24,7 @@
     const THOUGHT_CONTENT = 'ms-thought-chunk, ms-thinking-chunk, ms-thoughts, ms-thoughts-chunk, .thought-chunk, .thoughts-container, .thinking-container';
     const NOTE_IGNORED = `button, input, select, style, noscript, template, [role="toolbar"], mat-icon, .material-icons, .material-symbols-outlined, .code-block-header, .actions-container, .turn-information, .turn-header, .chat-turn-header, .author-label, .author-name, .role-label, .timestamp, .turn-footer, ms-chat-turn-options, ${THOUGHT_CONTENT}`;
     const NOTE_TEXT_CONTENT = 'ms-text-chunk, ms-cmark-node, .cmark-node, .markdown';
+    const NOTE_MATH = 'ms-katex, .katex-display, .katex, mjx-container, math, script[type^="math/tex"]';
     const NOTE_CONTENT = `.user-prompt-container, .model-prompt-container, ms-prompt-chunk, ${NOTE_TEXT_CONTENT}, textarea, ms-code-block, ms-katex, ms-image-chunk, ms-audio-chunk, ms-video-chunk, ms-file-chunk`;
     const MESSAGE_HEADER = /^(?:User|Model|Assistant|用户|模型|你)\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?$/i;
     // 原站与阅读区域共用同一套主题值，避免原生深色组件与浅色正文混用。
@@ -518,8 +519,8 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
             }, '');
         }
 
-        function children(node) {
-            return join([...node.childNodes].map(render));
+        function children(node, tableCell = false) {
+            return join([...node.childNodes].map(child => render(child, tableCell)));
         }
 
         function block(value) {
@@ -545,7 +546,7 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
             return `\n\n${fence}${language}\n${value}${value.endsWith('\n') ? '' : '\n'}${fence}\n\n`;
         }
 
-        function math(node) {
+        function mathDetails(node) {
             const annotation = node.querySelector('annotation[encoding="application/x-tex"]');
             const sourceNode = node.querySelector('[data-tex], [data-latex]');
             const source = annotation?.textContent || node.getAttribute('data-tex') || node.getAttribute('data-latex')
@@ -555,20 +556,25 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
                 || node.getAttribute('display') === 'true' || node.getAttribute('display') === 'block'
                 || node.getAttribute('data-display') === 'true'
                 || node.querySelector('.katex-display, math[display="block"]') !== null || /mode\s*=\s*display/i.test(node.getAttribute('type') || '');
-            if (source.trim()) return display ? `\n\n$$\n${source.trim()}\n$$\n\n` : `$${source.trim()}$`;
+            return { source: source.trim(), display };
+        }
+
+        function math(node) {
+            const { source, display } = mathDetails(node);
+            if (source) return display ? `\n\n$$\n${source}\n$$\n\n` : `$${source}$`;
             warnings.add('部分公式没有提供原始 LaTeX，已保留可读说明；请在保存前核对并补充公式。');
             const readable = node.querySelector('.katex-html') || node.querySelector('.katex') || node;
             const value = readable.textContent.trim();
             return `〔公式待核对${value ? `：${escapeText(value)}` : ''}〕`;
         }
 
-        function list(node) {
+        function list(node, tableCell = false) {
             const ordered = node.localName === 'ol';
             // cmark 可能在列表和 li 之间插入组件包装，按最近列表确定归属。
             const items = [...node.querySelectorAll('li')].filter(item => item.closest('ul, ol') === node);
             if (!items.length) {
                 warnings.add('部分列表没有可识别的条目，已保留其文字；请核对列表结构。');
-                return block(children(node));
+                return block(children(node, tableCell));
             }
             const reversed = ordered && node.hasAttribute('reversed');
             const rawStart = node.getAttribute('start');
@@ -586,13 +592,29 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
             const exact = !reversed && numbers.every((value, index) => value > 0 && value <= 999999999 && value === numbers[0] + index);
             if (ordered && !exact) warnings.add('列表编号无法通过 Markdown 有序列表准确表示，已按原编号保留为普通条目；请核对排版。');
             return block(items.map((item, index) => {
-                const marker = ordered ? (exact ? `${numbers[index]}. ` : `- ${numbers[index]}\\. `) : '- ';
-                const content = children(item).trim();
+                const bullet = tableCell ? '• ' : '- ';
+                const marker = ordered ? (exact ? `${numbers[index]}. ` : `${bullet}${numbers[index]}\\. `) : bullet;
+                const content = children(item, tableCell).trim();
                 const checkbox = item.querySelector('input[type="checkbox"]');
                 const task = checkbox?.closest('li') === item ? `[${checkbox.checked ? 'x' : ' '}] ` : '';
                 const indentation = ' '.repeat(ordered && exact ? marker.length : 2);
                 return marker + task + content.replace(/\n/g, '\n' + indentation);
             }).join('\n'));
+        }
+
+        function pipeTableMarkdown(rows, hasHeader) {
+            const width = Math.max(...rows.map(row => row.length));
+            const cells = rows.map(row => Array.from({ length: width }, (_, index) => {
+                if (index >= row.length) return '';
+                // GFM 单元格只能占一行；显式换行保留段落，实体缩进保留子列表层级。
+                return row[index].trim().split('\n').map(line => line
+                    .replace(/^ +/, spaces => '&#160;'.repeat(spaces.length))
+                    .replace(/(?<!\\)\|/g, '\\|')).join('<br>');
+            }));
+            const head = hasHeader ? cells[0] : Array(width).fill('');
+            const body = hasHeader ? cells.slice(1) : cells;
+            const line = row => `| ${row.join(' | ')} |`;
+            return [line(head), line(Array(width).fill('---')), ...body.map(line)].join('\n');
         }
 
         function table(node) {
@@ -609,11 +631,19 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
             }
             const captionText = join(captions.map(caption => block(children(caption))));
             // 隐藏单元格仍占原列，避免后续内容被错配到前面的表头。
-            const cellContent = cell => visibleNoteContent(cell) ? children(cell).trim() : '';
-            const blockContent = 'pre, ul, ol, ms-code-block, .katex-display, ms-katex.display, ms-katex.block, ms-katex[display="true"], ms-katex[display="block"], ms-katex[data-display="true"], mjx-container[display="true"], mjx-container[display="block"], math[display="block"], script[type*="mode=display"], script[type*="mode= display"]';
-            const unsafeCell = cell => cell.colSpan !== 1 || cell.rowSpan !== 1 || cell.querySelector(blockContent) !== null
-                || [...cell.querySelectorAll('code, pre, annotation[encoding="application/x-tex"], [data-tex], [data-latex]')]
-                    .some(part => /\\\|/.test(part.textContent + (part.getAttribute('data-tex') || '') + (part.getAttribute('data-latex') || '')));
+            const cellContent = (cell, inline = false) => visibleNoteContent(cell) ? children(cell, inline).trim() : '';
+            const unsafeCell = cell => {
+                if (cell.colSpan !== 1 || cell.rowSpan !== 1) return true;
+                // 行内数学组件内部的 pre/code 属于公式渲染层，不能当作正文代码块。
+                const ordinaryContent = selector => [...cell.querySelectorAll(selector)]
+                    .filter(part => visibleNoteContent(part) && !part.closest(NOTE_MATH));
+                if (ordinaryContent('pre, ms-code-block').length) return true;
+                if (ordinaryContent('code, kbd, samp').some(part => /\\\|/.test(part.textContent))) return true;
+                return [...cell.querySelectorAll(NOTE_MATH)].filter(visibleNoteContent).some(part => {
+                    const { source, display } = mathDetails(part);
+                    return display || /[\r\n]/.test(source) || /\\\|/.test(source);
+                });
+            };
             const complex = rows.some(row => row.some(cell => visibleNoteContent(cell) && unsafeCell(cell)))
                 || [...node.querySelectorAll('table')].some(visibleNoteContent);
             if (complex) {
@@ -624,19 +654,13 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
                 }).join('\n\n');
                 return join([captionText, block(content)]);
             }
-            const width = Math.max(...rows.map(row => row.length));
-            const cells = rows.map(row => Array.from({ length: width }, (_, index) => {
-                const cell = row[index];
-                return cell ? cellContent(cell).replace(/\n+/g, '<br>').replace(/(?<!\\)\|/g, '\\|') : '';
-            }));
             const hasHeader = rows[0].some(cell => cell.localName === 'th');
-            const head = hasHeader ? cells.shift() : Array(width).fill('');
-            const line = row => `| ${row.join(' | ')} |`;
-            return join([captionText, block([line(head), line(Array(width).fill('---')), ...cells.map(line)].join('\n'))]);
+            const content = rows.map(row => row.map(cell => cellContent(cell, true)));
+            return join([captionText, block(pipeTableMarkdown(content, hasHeader))]);
         }
 
-        function link(node) {
-            const label = children(node).trim();
+        function link(node, tableCell = false) {
+            const label = children(node, tableCell).trim();
             const raw = node.getAttribute('href') || '';
             if (!raw) return label;
             const base = location.protocol === 'https:' ? `https://${location.hostname}${location.pathname}` : 'https://aistudio.google.com/';
@@ -654,7 +678,7 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
             return block(`〔附件待保存${label ? `：${escapeText(label)}` : ''}〕`);
         }
 
-        function render(node) {
+        function render(node, tableCell = false) {
             if (node.nodeType === Node.TEXT_NODE) {
                 if (!node.textContent.trim() && /[\r\n]/.test(node.textContent)) return '';
                 return escapeText(node.textContent);
@@ -662,8 +686,9 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
             if (node.nodeType !== Node.ELEMENT_NODE) return '';
             const tag = node.localName;
             if (noteDecoration(node)) return '';
-            if (node.matches('ms-katex, .katex-display, .katex, mjx-container, math, script[type^="math/tex"]')) return math(node);
-            if (tag === 'script' || node.hidden || node.getAttribute('aria-hidden') === 'true') return '';
+            if (node.hidden || node.getAttribute('aria-hidden') === 'true') return '';
+            if (node.matches(NOTE_MATH)) return math(node);
+            if (tag === 'script') return '';
             // value 才是文本框当前显示的原文；textContent 可能为空或仍是旧的初始值。
             if (tag === 'textarea') return block(escapeText(node.value.replace(/\r\n?/g, '\n'), { preserveWhitespace: true }));
             if (node.matches('img, video, audio, canvas, svg, iframe, object, embed, a[download], ms-image-chunk, ms-audio-chunk, ms-video-chunk, ms-file-chunk')) return attachment(node);
@@ -676,10 +701,10 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
             if (tag === 'code' || tag === 'kbd' || tag === 'samp') return code(node, true);
             if (tag === 'br') return '  \n';
             if (tag === 'hr') return '\n\n---\n\n';
-            if (tag === 'ul' || tag === 'ol') return list(node);
+            if (tag === 'ul' || tag === 'ol') return list(node, tableCell);
             if (tag === 'table') return table(node);
-            if (tag === 'a') return link(node);
-            const value = children(node);
+            if (tag === 'a') return link(node, tableCell);
+            const value = children(node, tableCell);
             if (/^h[1-6]$/.test(tag)) return block(`${'#'.repeat(Number(tag[1]))} ${value.trim()}`);
             if (tag === 'strong' || tag === 'b') return emphasis(value, '**');
             if (tag === 'em' || tag === 'i') return emphasis(value, '*');
