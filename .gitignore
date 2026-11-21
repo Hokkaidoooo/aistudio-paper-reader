@@ -2,6 +2,9 @@
 !/.gitignore
 !/.gitattributes
 !/README.md
+!/README.en.md
+!/README.es.md
+!/README.ja.md
 !/LICENSE
 !/package.json
 !/package-lock.json
