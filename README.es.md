@@ -13,13 +13,14 @@ Lee las respuestas largas de Google AI Studio con menos distracciones y guarda u
 ## Leer y guardar una nota
 
 - Pulsa **阅读** (Leer) en la página o el icono de la barra. Elige entre cuatro temas y ajusta la letra, el interlineado, el ancho y el ajuste de líneas de código. **恢复原版** recupera la vista original.
-- Pulsa **记录问答** (Guardar pregunta y respuesta), elige un intercambio y revisa el título, las etiquetas y el Markdown. Selecciona **选择位置并保存** (Elegir ubicación y guardar) o **下载 Markdown** (Descargar Markdown).
+- Pulsa **记录问答** (Guardar pregunta y respuesta), elige un intercambio y revisa el título, las etiquetas y el Markdown. Pulsa **选择保存位置** (Elegir ubicación) para seleccionar una carpeta y después **下载 Markdown** (Descargar Markdown) para guardar directamente en ella.
+- La carpeta elegida se conserva en la página actual, incluso al cerrar y reabrir el panel o cambiar de conversación. **更改保存位置** (Cambiar ubicación) permite elegir otra carpeta. Confirma la carpeta de nuevo tras refrescar o reabrir la página. Si no has elegido ninguna, se usa la carpeta de descargas predeterminada del navegador. Los nombres repetidos reciben un número; los errores de permisos o escritura se muestran en el panel y conservan el borrador.
 - Las notas admiten encabezados, enlaces, listas, código, tablas y fórmulas si está disponible su código LaTeX. El panel indica qué elementos faltan. Si una tabla no se puede extraer completa, se detiene la extracción y se conserva el borrador anterior. Si falta una tabla en una exportación antigua, vuelve a guardar el intercambio a partir de la respuesta original.
 - Las notas Markdown incluyen por defecto el enlace de la conversación; puedes desactivarlo. Los borradores para blogs omiten el enlace por defecto e incluyen `draft: true`.
 
 ## Privacidad y permisos
 
-La extensión solo solicita `storage` para guardar las preferencias de lectura. El script se limita a `aistudio.google.com` y el modo lectura aparece en las páginas de conversación. La extensión no hace peticiones de red ni llama a API de modelos. Tú decides cuándo guardar, descargar o copiar. Los borradores permanecen en la memoria de la página al cerrar el panel; guárdalos antes de refrescar o cerrar la página.
+La extensión solo solicita `storage` para guardar las preferencias de lectura. El script se limita a `aistudio.google.com` y el modo lectura aparece en las páginas de conversación. La extensión no hace peticiones de red ni llama a API de modelos. Tú decides cuándo guardar, descargar o copiar. Al elegir una carpeta, el navegador solicita acceso de lectura y escritura a ella. Los borradores y la referencia a la carpeta elegida permanecen en la memoria de la página al cerrar el panel; guarda los borradores antes de refrescar o cerrar la página.
 
 ## Reparar citas de una exportación antigua
 
