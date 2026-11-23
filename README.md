@@ -1,5 +1,7 @@
 # AI Studio 纸间阅读
 
+**简体中文** · [English](README.en.md) · [Español](README.es.md) · [日本語](README.ja.md)
+
 让 AI Studio 的长回答更好读，把选中的一对问答保存为 Markdown。适用于 Chrome、Edge 等 Chromium 浏览器。
 
 ## 安装
