@@ -40,9 +40,12 @@ function contrast(a, b) {
     return (Math.max(x, y) + .05) / (Math.min(x, y) + .05);
 }
 
-async function syntheticPage(stored = null, pathname = '/prompts/new_chat', { wrappedWindow = false, localFile = false } = {}) {
+async function syntheticPage(stored = null, pathname = '/prompts/new_chat', { wrappedWindow = false, localFile = false, secureOrigin = false } = {}) {
     const page = await context.newPage();
-    if (localFile) await page.goto(pathToFileURL(fixturePath).href);
+    if (secureOrigin) {
+        await page.route('https://air-reader.test/**', route => route.fulfill({ contentType: 'text/html', body: fixture }));
+        await page.goto('https://air-reader.test/notes-fixture');
+    } else if (localFile) await page.goto(pathToFileURL(fixturePath).href);
     else await page.setContent(fixture);
     await page.evaluate(({ stored, pathname, wrappedWindow }) => {
         document.documentElement.removeAttribute('data-air-preview');
@@ -80,7 +83,7 @@ async function syntheticPage(stored = null, pathname = '/prompts/new_chat', { wr
         window.__testWindow = wrappedWindow ? new Proxy(window, {
             get(target, key) {
                 const value = Reflect.get(target, key, target);
-                return typeof value === 'function' && key !== 'showSaveFilePicker' ? value.bind(target) : value;
+                return typeof value === 'function' && key !== 'showDirectoryPicker' ? value.bind(target) : value;
             }
         }) : window;
     }, { stored, pathname, wrappedWindow });

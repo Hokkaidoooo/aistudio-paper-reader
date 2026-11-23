@@ -367,6 +367,7 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
     .note-dialog .actions a { display: grid; place-items: center; flex: 1; min-height: 36px; padding: 6px 12px; color: var(--text); text-decoration: none; border: 1px solid var(--border); border-radius: 8px; }
     .note-dialog .actions a:hover { background: var(--soft); }
     .note-dialog .actions button, .note-dialog .actions a { white-space: nowrap; }
+    .note-dialog .actions button:disabled, .note-dialog .actions a[aria-disabled="true"] { opacity: .6; cursor: wait; }
     .note-destination { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
     .note-dialog .status { color: var(--text); }
     .note-dialog summary { cursor: pointer; color: var(--muted); }
@@ -798,7 +799,7 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
     const noteError = element('p', { id: 'note-error', class: 'error', role: 'alert', hidden: '' });
     const noteWarning = element('p', { id: 'note-warning', class: 'error', role: 'alert', hidden: '' });
     const noteDestination = element('p', { class: 'note-destination' });
-    const noteSave = element('button', { id: 'note-save', type: 'button', class: 'primary' }, ['选择位置并保存']);
+    const noteSave = element('button', { id: 'note-save', type: 'button', class: 'primary' }, ['选择保存位置']);
     const noteDownload = element('a', { id: 'note-download', href: '#', download: '' }, ['下载 Markdown']);
     const noteClose = element('button', { id: 'note-close', type: 'button', class: 'close', 'aria-label': '关闭记录' }, ['×']);
     const noteBlogFields = element('div', { class: 'note-grid', hidden: '' }, [noteField('博客摘要', noteDescription, true), noteField('文章分类', noteCategory)]);
@@ -820,6 +821,7 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
     let noteSnapshot = null;
     let noteDirty = false;
     let noteBusy = false;
+    let noteDirectory = null;
     let noteDownloadUrl = '';
 
     function showNoteError(error) {
@@ -938,19 +940,31 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
         const blog = noteFormat.value === 'blog';
         noteBlogFields.hidden = !blog;
         noteSource.checked = !blog;
-        noteDestination.textContent = blog
-            ? '保存为博客草稿，检查内容后可按自己的博客流程发布。'
-            : '首次保存请选择自己的笔记文件夹，浏览器会记住最近使用的位置。';
-        noteSave.disabled = typeof nativeWindow.showSaveFilePicker !== 'function' || noteBusy;
-        if (typeof nativeWindow.showSaveFilePicker !== 'function') noteDestination.textContent += ' 当前浏览器不支持选择位置保存，请使用“下载 Markdown”后移动文件。';
+        updateNoteDestination();
         refreshNotePreview();
+    }
+
+    function updateNoteDestination() {
+        const supported = typeof nativeWindow.showDirectoryPicker === 'function';
+        if (noteDirectory) noteDestination.textContent = `下载位置：${noteDirectory.name}。本页后续下载会直接保存到这个文件夹。`;
+        else noteDestination.textContent = supported
+            ? '下载位置：浏览器默认下载目录。点击“选择保存位置”可指定自己的文件夹。'
+            : '下载位置：浏览器默认下载目录。当前浏览器不支持选择文件夹。';
+        noteSave.textContent = noteDirectory ? '更改保存位置' : '选择保存位置';
+        noteSave.disabled = !supported || noteBusy;
+        noteDownload.setAttribute('aria-disabled', String(noteBusy));
+    }
+
+    function setNoteBusy(busy) {
+        noteBusy = busy;
+        updateNoteDestination();
     }
 
     function openNoteDialog() {
         setPanelOpen(false);
         collectNotePairs();
         noteDialog.hidden = false;
-        noteSave.disabled = typeof nativeWindow.showSaveFilePicker !== 'function' || noteBusy;
+        updateNoteDestination();
         if (!noteDirty && noteAnswer.value !== '') readSelectedPair();
         else if (!noteSnapshot) showNoteError(new Error(['当前没有识别到成对的问答，请等待回答显示后重新打开。', ...notePairWarnings].join(' ')));
         else noteStatus.textContent = `已保留先前第 ${noteSnapshot.index} 对问答的草稿与来源；选择问答即可更换正文。`;
@@ -962,41 +976,76 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
         launcher.focus();
     }
 
+    async function chooseNoteDirectory() {
+        if (noteBusy) return;
+        clearNoteError();
+        noteStatus.textContent = '';
+        try {
+            if (typeof nativeWindow.showDirectoryPicker !== 'function') throw new Error('当前浏览器不支持选择文件夹。');
+            setNoteBusy(true);
+            noteDirectory = await nativeWindow.showDirectoryPicker({
+                id: 'air-note-directory', mode: 'readwrite',
+                ...(noteDirectory ? { startIn: noteDirectory } : {})
+            });
+            noteStatus.textContent = `已选择：${noteDirectory.name}。点击“下载 Markdown”即可保存到这个文件夹。`;
+        } catch (error) {
+            if (error.name === 'AbortError') noteStatus.textContent = '已取消选择，保存位置和草稿保持不变。';
+            else showNoteError(new Error(`选择保存位置失败：${error.message}`));
+        } finally {
+            setNoteBusy(false);
+        }
+    }
+
+    async function createNoteFile(directory, filename) {
+        const stem = filename.slice(0, -3);
+        for (let index = 1; ; index++) {
+            const name = index === 1 ? filename : `${stem} (${index}).md`;
+            try {
+                await directory.getFileHandle(name);
+            } catch (error) {
+                if (error.name === 'NotFoundError') return directory.getFileHandle(name, { create: true });
+                if (error.name !== 'TypeMismatchError') throw error;
+            }
+        }
+    }
+
     async function saveNoteFile() {
         if (noteBusy) return;
         clearNoteError();
         noteStatus.textContent = '';
-        let stage = '选择文件';
+        let stage = '检查笔记';
         try {
             const file = buildNoteFile();
-            if (typeof nativeWindow.showSaveFilePicker !== 'function') throw new Error('当前浏览器不支持选择位置保存，请使用“下载 Markdown”。');
-            noteBusy = true;
-            noteSave.disabled = true;
-            const handle = await nativeWindow.showSaveFilePicker({
-                id: `air-note-${noteFormat.value}`,
-                suggestedName: file.filename,
-                types: [{ description: 'Markdown 笔记', accept: { 'text/markdown': ['.md'] } }]
-            });
-            stage = '写入文件';
-            const writer = await handle.createWritable();
-            try {
-                await writer.write(file.content);
-                await writer.close();
-            } catch (error) {
-                try { await writer.abort(); }
-                catch (abortError) { console.error('[纸间阅读·取消写入]', abortError); }
-                throw error;
+            const directory = noteDirectory;
+            if (!directory) throw new Error('请先选择保存位置。');
+            setNoteBusy(true);
+            stage = '授权保存位置';
+            if (await directory.requestPermission({ mode: 'readwrite' }) !== 'granted') {
+                throw new Error(`没有获得“${directory.name}”的写入权限，请重新选择保存位置并允许访问。`);
             }
-            stage = '核对文件';
-            const saved = await handle.getFile();
-            if (await saved.text() !== file.content) throw new Error('文件回读内容不一致，请检查目标文件。');
-            noteStatus.textContent = `已保存并核对：${handle.name}。位置以保存窗口选择的目录为准。`;
+            stage = '写入文件';
+            // 串行处理同源页面的导出，防止两个标签页同时创建同名笔记。
+            const filename = await nativeWindow.navigator.locks.request('air-note-directory-write', async () => {
+                const handle = await createNoteFile(directory, file.filename);
+                const writer = await handle.createWritable();
+                try {
+                    await writer.write(file.content);
+                    await writer.close();
+                } catch (error) {
+                    try { await writer.abort(); }
+                    catch (abortError) { console.error('[纸间阅读·取消写入]', abortError); }
+                    throw error;
+                }
+                stage = '核对文件';
+                const saved = await handle.getFile();
+                if (await saved.text() !== file.content) throw new Error('文件回读内容不一致，请检查目标文件。');
+                return handle.name;
+            });
+            noteStatus.textContent = `已保存并核对：${directory.name} / ${filename}`;
         } catch (error) {
-            if (stage === '选择文件' && error.name === 'AbortError') noteStatus.textContent = '已取消保存，草稿仍保留在面板中。';
-            else showNoteError(new Error(`${stage}失败：${error.message}`));
+            showNoteError(new Error(`${stage}失败：${error.message}`));
         } finally {
-            noteBusy = false;
-            noteSave.disabled = typeof nativeWindow.showSaveFilePicker !== 'function';
+            setNoteBusy(false);
         }
     }
 
@@ -1009,7 +1058,7 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
     shadow.getElementById('reader-record').addEventListener('click', openNoteDialog);
     noteClose.addEventListener('click', closeNoteDialog);
     noteAnswer.addEventListener('change', readSelectedPair);
-    noteSave.addEventListener('click', saveNoteFile);
+    noteSave.addEventListener('click', chooseNoteDirectory);
     noteFormat.addEventListener('change', () => { updateNoteFormat(); noteDirty = true; });
     noteDetails.addEventListener('toggle', refreshNotePreview);
     noteDialog.addEventListener('input', event => {
@@ -1018,7 +1067,13 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
         clearNoteError();
         refreshNotePreview();
     });
-    noteDownload.addEventListener('click', event => {
+    noteDownload.addEventListener('click', async event => {
+        if (noteBusy) { event.preventDefault(); return; }
+        if (noteDirectory) {
+            event.preventDefault();
+            await saveNoteFile();
+            return;
+        }
         clearNoteError();
         try {
             const file = buildNoteFile();
@@ -1026,7 +1081,7 @@ ${ACTIVE} ${MODEL} ::selection { background: var(--air-selection); color: var(--
             noteDownloadUrl = URL.createObjectURL(new Blob([file.content], { type: 'text/markdown;charset=utf-8' }));
             noteDownload.href = noteDownloadUrl;
             noteDownload.download = file.filename;
-            noteStatus.textContent = '已发起 Markdown 下载，请在浏览器下载列表确认完成，再放入目标目录。';
+            noteStatus.textContent = '已发起 Markdown 下载，位置为浏览器默认下载目录，请在下载列表确认完成。';
         } catch (error) { event.preventDefault(); showNoteError(error); }
     });
     shadow.getElementById('note-copy').addEventListener('click', async () => {

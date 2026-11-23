@@ -43,6 +43,26 @@ async function waitForReader(page) {
     assert.equal(await page.locator('#air-reader-controls').count(), 1);
 }
 
+async function extensionWorld(page, extensionId) {
+    const client = await context.newCDPSession(page);
+    const worlds = [];
+    client.on('Runtime.executionContextCreated', ({ context: executionContext }) => worlds.push(executionContext));
+    await client.send('Runtime.enable');
+    const world = worlds.find(item => item.origin === `chrome-extension://${extensionId}`
+        || item.name === `chrome-extension://${extensionId}`);
+    assert(world, '必须找到最终扩展 content script 的真实隔离世界');
+    return {
+        async evaluate(expression) {
+            const result = await client.send('Runtime.evaluate', {
+                contextId: world.id, expression, returnByValue: true, awaitPromise: true
+            });
+            assert(!result.exceptionDetails, JSON.stringify(result.exceptionDetails));
+            return result.result.value;
+        },
+        detach: () => client.detach()
+    };
+}
+
 async function inspectExtension() {
     const inspector = await context.newPage();
     try {
@@ -246,46 +266,99 @@ try {
         report.download = { filename: download.suggestedFilename(), bytes: Buffer.byteLength(saved), sha256: createHash('sha256').update(saved).digest('hex') };
     });
 
-    await check('真实原生保存选择器接收可信点击，无头取消后按钮与草稿恢复', async () => {
+    await check('真实原生目录选择器接收可信点击，无头取消后按钮与草稿恢复', async () => {
         const before = await page.locator('#note-body').inputValue();
-        const client = await context.newCDPSession(page);
-        const worlds = [];
-        client.on('Runtime.executionContextCreated', ({ context: executionContext }) => worlds.push(executionContext));
-        await client.send('Runtime.enable');
-        const extensionWorld = worlds.find(world => world.origin === `chrome-extension://${extensionId}`
-            || world.name === `chrome-extension://${extensionId}`);
-        assert(extensionWorld, '必须找到最终扩展 content script 的真实隔离世界');
-        const result = await client.send('Runtime.evaluate', {
-            contextId: extensionWorld.id, expression: `(() => {
-                window.__airNativeSave = document.defaultView.showSaveFilePicker;
+        const world = await extensionWorld(page, extensionId);
+        const isNative = await world.evaluate(`(() => {
+                window.__airNativeSave = document.defaultView.showDirectoryPicker;
                 window.__airSaveClicks = [];
                 document.addEventListener('click', event => {
                     if (event.composedPath()[0].id === 'note-save') window.__airSaveClicks.push({ trusted: event.isTrusted, active: navigator.userActivation.isActive });
                 }, true);
                 return typeof window.__airNativeSave === 'function' && window.__airNativeSave.toString().includes('[native code]');
-            })()`, returnByValue: true
-        });
-        assert(!result.exceptionDetails, JSON.stringify(result.exceptionDetails));
-        assert.equal(result.result.value, true, '真实扩展必须使用原生选择器');
+            })()`);
+        assert.equal(isNative, true, '真实扩展必须使用原生选择器');
         assert(await page.locator('#note-save').isEnabled());
         await page.locator('#note-save').click();
         await page.waitForFunction(() => {
             const root = document.getElementById('air-reader-controls').shadowRoot;
             return !root.getElementById('note-error').hidden
-                || root.getElementById('note-status').textContent.includes('已取消保存');
+                || root.getElementById('note-status').textContent.includes('已取消选择');
         }, null, { timeout: 10000 });
         assert(await page.locator('#note-error').isHidden(), await page.locator('#note-error').textContent());
-        assert.match(await page.locator('#note-status').textContent(), /已取消保存/);
+        assert.match(await page.locator('#note-status').textContent(), /已取消选择/);
         assert.equal(await page.locator('#note-body').inputValue(), before);
         assert(await page.locator('#note-save').isEnabled());
-        const trace = await client.send('Runtime.evaluate', {
-            contextId: extensionWorld.id, expression: `({ sameNative: window.__airNativeSave === document.defaultView.showSaveFilePicker, clicks: window.__airSaveClicks })`, returnByValue: true
-        });
-        assert(!trace.exceptionDetails, JSON.stringify(trace.exceptionDetails));
-        assert.equal(trace.result.value.sameNative, true);
-        assert.deepEqual(trace.result.value.clicks, [{ trusted: true, active: true }]);
-        report.nativePicker = trace.result.value;
-        await client.detach();
+        const trace = await world.evaluate(`({ sameNative: window.__airNativeSave === document.defaultView.showDirectoryPicker, clicks: window.__airSaveClicks })`);
+        assert.equal(trace.sameNative, true);
+        assert.deepEqual(trace.clicks, [{ trusted: true, active: true }]);
+        report.nativePicker = trace;
+        await world.detach();
+    });
+
+    await check('最终 ZIP 的真实扩展选择一次目录后直接写入两份原生文件，重名保留且无默认下载', async () => {
+        const savePage = await context.newPage();
+        const downloads = [];
+        savePage.on('download', download => downloads.push(download));
+        let world;
+        try {
+            await savePage.goto(fixtureUrl);
+            await waitForReader(savePage);
+            world = await extensionWorld(savePage, extensionId);
+            await world.evaluate(`(async () => {
+                const root = await navigator.storage.getDirectory();
+                window.__zipNoteDirectory = await root.getDirectoryHandle('最终包笔记目录', { create: true });
+                window.__zipPickerCalls = [];
+                // 选择器返回隔离 OPFS 目录，文件写入与回读使用真实浏览器 API。
+                document.defaultView.showDirectoryPicker = async function(options) {
+                    if (this !== document.defaultView) throw new TypeError('目录选择器接收对象错误');
+                    window.__zipPickerCalls.push({ id: options.id, mode: options.mode, active: navigator.userActivation.isActive });
+                    return window.__zipNoteDirectory;
+                };
+                const NativeDate = Date;
+                const fixedTime = NativeDate.parse('2026-11-23T12:34:56+08:00');
+                window.Date = class extends NativeDate {
+                    constructor(...args) { super(...(args.length ? args : [fixedTime])); }
+                    static now() { return fixedTime; }
+                };
+            })()`);
+            await savePage.getByRole('button', { name: '阅读设置', exact: true }).click();
+            await savePage.locator('#reader-record').click();
+            await savePage.locator('#note-title').fill('同目录笔记');
+            await savePage.locator('#note-body').fill('## 我的问题\n\n首份问题。\n\n## AI 回答\n\n首份完整中文回答。');
+            await savePage.locator('#note-save').click();
+            await savePage.waitForFunction(() => document.querySelector('#air-reader-controls').shadowRoot.querySelector('.note-destination').textContent.includes('最终包笔记目录'));
+            const listFiles = () => world.evaluate(`(async () => {
+                const files = [];
+                for await (const [name, handle] of window.__zipNoteDirectory) files.push({ name, content: await (await handle.getFile()).text() });
+                return files;
+            })()`);
+            assert.equal((await listFiles()).length, 0, '选择位置已经写入了文件');
+            await savePage.locator('#note-download').click();
+            await savePage.waitForFunction(() => document.querySelector('#air-reader-controls').shadowRoot.querySelector('#note-status').textContent.includes('已保存并核对'));
+            const first = (await listFiles())[0];
+            assert(first.content.includes('首份完整中文回答。'));
+            await savePage.locator('#note-body').fill('## 我的问题\n\n第二份问题。\n\n## AI 回答\n\n第二份完整中文回答。');
+            await savePage.locator('#note-download').click();
+            await savePage.waitForFunction(() => document.querySelector('#air-reader-controls').shadowRoot.querySelector('#note-status').textContent.includes('(2).md'));
+            const files = await listFiles();
+            assert.equal(files.length, 2);
+            assert.equal(files.find(file => file.name === first.name).content, first.content);
+            assert(files.some(file => file.name.endsWith('(2).md') && file.content.includes('第二份完整中文回答。')));
+            assert.equal(downloads.length, 0);
+            const pickerCalls = await world.evaluate('window.__zipPickerCalls');
+            assert.deepEqual(pickerCalls, [{ id: 'air-note-directory', mode: 'readwrite', active: true }]);
+            report.directoryExport = {
+                pickerUsesTestDouble: true, fileIO: '原生隔离 OPFS', pickerCalls,
+                browserDownloads: downloads.length,
+                files: files.map(file => ({ name: file.name, bytes: Buffer.byteLength(file.content), sha256: createHash('sha256').update(file.content).digest('hex') }))
+            };
+            await savePage.locator('#note-download').scrollIntoViewIfNeeded();
+            await savePage.screenshot({ path: path.join(artifactDir, '最终包目录直写.png') });
+        } finally {
+            if (world) await world.detach();
+            await savePage.close();
+        }
     });
 
     await check('真实 popup 从笔记切换阅读设置再返回，面板互斥且编辑草稿不变', async () => {

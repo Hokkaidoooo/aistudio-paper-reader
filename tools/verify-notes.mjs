@@ -267,38 +267,257 @@ async function installPicker(page, mode = 'success') {
         window.__notePickerCalls = [];
         window.__notePickerReceivers = [];
         window.__notePickerActivations = [];
+        window.__notePermissionCalls = [];
+        window.__noteFileCalls = [];
+        window.__noteFiles = new Map();
         window.__noteWriterClosed = false;
         window.__noteWriterAborted = false;
         window.__noteReadbacks = 0;
-        window.showSaveFilePicker = async function(options) {
+        window.showDirectoryPicker = async function(options) {
             window.__notePickerCalls.push(options);
             const correctReceiver = this === document.defaultView;
             window.__notePickerReceivers.push(correctReceiver);
             window.__notePickerActivations.push(navigator.userActivation.isActive);
-            if (!correctReceiver) throw new TypeError("Failed to execute 'showSaveFilePicker' on 'Window': Illegal invocation");
-            if (mode === 'cancel') throw new DOMException('测试：用户取消保存', 'AbortError');
-            if (mode === 'denied') throw new DOMException('测试：文件权限被拒绝', 'NotAllowedError');
-            return {
-                name: options.suggestedName,
-                createWritable: async () => ({
-                    write: async value => {
-                        if (mode === 'write-failure') throw new Error('测试：磁盘写入失败');
-                        window.__noteSaved = typeof value === 'string' ? value : await value.text();
-                    },
-                    close: async () => { window.__noteWriterClosed = true; },
-                    abort: async () => { window.__noteWriterAborted = true; }
-                }),
-                getFile: async () => {
-                    window.__noteReadbacks++;
-                    return new File(
-                        [mode === 'readback-mismatch' ? '测试：写回内容不一致' : window.__noteSaved],
-                        options.suggestedName,
-                        { type: 'text/markdown' }
-                    );
+            if (!correctReceiver) throw new TypeError("Failed to execute 'showDirectoryPicker' on 'Window': Illegal invocation");
+            if (mode === 'cancel') throw new DOMException('测试：用户取消选择', 'AbortError');
+            if (mode === 'denied') throw new DOMException('测试：目录权限被拒绝', 'NotAllowedError');
+            const directory = {
+                kind: 'directory',
+                name: '测试笔记目录',
+                requestPermission: async options => {
+                    window.__notePermissionCalls.push({ options, active: navigator.userActivation.isActive });
+                    return mode === 'permission-denied' ? 'denied' : 'granted';
+                },
+                getFileHandle: async (name, { create = false } = {}) => {
+                    window.__noteFileCalls.push({ name, create });
+                    if (!window.__noteFiles.has(name)) {
+                        if (!create) throw new DOMException('测试：文件不存在', 'NotFoundError');
+                        window.__noteFiles.set(name, '');
+                    }
+                    return {
+                        kind: 'file', name,
+                        createWritable: async () => ({
+                            write: async value => {
+                                if (mode === 'write-failure') throw new Error('测试：磁盘写入失败');
+                                window.__noteSaved = typeof value === 'string' ? value : await value.text();
+                            },
+                            close: async () => {
+                                if (mode === 'close-failure') throw new Error('测试：文件关闭失败');
+                                window.__noteWriterClosed = true;
+                                window.__noteFiles.set(name, window.__noteSaved);
+                            },
+                            abort: async () => { window.__noteWriterAborted = true; }
+                        }),
+                        getFile: async () => {
+                            window.__noteReadbacks++;
+                            if (mode === 'readback-failure') throw new Error('测试：文件回读失败');
+                            return new File(
+                                [mode === 'readback-mismatch' ? '测试：写回内容不一致' : window.__noteFiles.get(name)],
+                                name, { type: 'text/markdown' }
+                            );
+                        }
+                    };
                 }
             };
+            window.__noteSelectedDirectory = directory;
+            return directory;
         };
     }, mode);
+}
+
+async function chooseDirectory(page) {
+    await page.locator(ids.save).click();
+    await page.waitForFunction(() => {
+        const root = document.querySelector('#air-reader-controls').shadowRoot;
+        return root.querySelector('.note-destination').textContent.includes('测试笔记目录')
+            && !root.querySelector('#note-save').disabled;
+    });
+}
+
+async function saveToSelectedDirectory(page) {
+    const readbacks = await page.evaluate(() => window.__noteReadbacks);
+    await page.locator(ids.download).click();
+    await page.waitForFunction(before => {
+        const root = document.querySelector('#air-reader-controls').shadowRoot;
+        return window.__noteReadbacks > before
+            && root.querySelector('#note-status').textContent.includes('已保存并核对')
+            && !root.querySelector('#note-save').disabled;
+    }, readbacks);
+}
+
+async function installNativeDirectory(page, groupName) {
+    await page.evaluate(async groupName => {
+        const root = await navigator.storage.getDirectory();
+        const group = await root.getDirectoryHandle(groupName, { create: true });
+        const directory = await group.getDirectoryHandle('测试笔记目录', { create: true });
+        window.__nativeNoteDirectory = directory;
+        window.__nativeNoteCreates = 0;
+        window.__nativeNotePickerCalls = [];
+        window.__nativeNotePermissions = [];
+        const selected = {
+            kind: directory.kind, name: directory.name,
+            requestPermission: async options => {
+                window.__nativeNotePermissions.push({ options, active: navigator.userActivation.isActive });
+                return directory.requestPermission(options);
+            },
+            getFileHandle: async (name, options) => {
+                const handle = await directory.getFileHandle(name, options);
+                if (options?.create) window.__nativeNoteCreates++;
+                return handle;
+            }
+        };
+        window.showDirectoryPicker = async function(options) {
+            if (this !== document.defaultView) throw new TypeError('测试：目录选择接收对象错误');
+            window.__nativeNotePickerCalls.push({ id: options.id, mode: options.mode, active: navigator.userActivation.isActive });
+            return selected;
+        };
+        const NativeDate = Date;
+        const fixedTime = NativeDate.parse('2026-11-23T12:34:56+08:00');
+        window.Date = class extends NativeDate {
+            constructor(...args) { super(...(args.length ? args : [fixedTime])); }
+            static now() { return fixedTime; }
+        };
+    }, groupName);
+}
+
+async function nativeDirectoryFiles(page) {
+    return page.evaluate(async () => {
+        const files = [];
+        for await (const [name, handle] of window.__nativeNoteDirectory) {
+            if (handle.kind === 'file') files.push({ name, text: await (await handle.getFile()).text() });
+        }
+        return files.sort((a, b) => a.name.localeCompare(b.name));
+    });
+}
+
+async function saveNativeDirectory(page) {
+    const creates = await page.evaluate(() => window.__nativeNoteCreates);
+    await page.locator(ids.download).click();
+    await page.waitForFunction(before => {
+        const root = document.querySelector('#air-reader-controls').shadowRoot;
+        return window.__nativeNoteCreates > before
+            && root.querySelector('#note-status').textContent.includes('已保存并核对')
+            && !root.querySelector('#note-save').disabled;
+    }, creates);
+}
+
+async function verifyDirectoryWrites({ check, syntheticPage, artifactDir }) {
+    await check('原生目录选择一次后连续直写，重名文件与子目录保留，关闭重开及取消选择仍使用原目录', async () => {
+        const page = await syntheticPage(null, '/prompts/native-directory', { wrappedWindow: true, secureOrigin: true });
+        const downloads = [];
+        page.on('download', download => downloads.push(download));
+        try {
+            await installNativeDirectory(page, `目录直写-${Date.now()}`);
+            await openNotes(page);
+            await page.locator(ids.title).fill('目录直写笔记');
+            await page.locator(ids.body).fill('首份笔记的原生文件内容。');
+            await chooseDirectory(page);
+            assert.equal((await nativeDirectoryFiles(page)).length, 0, '选择位置时已写入文件');
+            await saveNativeDirectory(page);
+            const first = (await nativeDirectoryFiles(page))[0];
+            assert(first.text.includes('首份笔记的原生文件内容。'));
+            await page.evaluate(async name => {
+                await window.__nativeNoteDirectory.getDirectoryHandle(name.slice(0, -3) + ' (2).md', { create: true });
+            }, first.name);
+            await page.locator(ids.body).fill('第二份笔记的原生文件内容。');
+            await saveNativeDirectory(page);
+            const second = await nativeDirectoryFiles(page);
+            assert.equal(second.length, 2);
+            assert.equal(second.find(file => file.name === first.name).text, first.text, '同名导出覆盖了已有文件');
+            assert(second.some(file => / \(3\)\.md$/.test(file.name) && file.text.includes('第二份笔记的原生文件内容。')), '同名子目录未被跳过');
+            await page.locator('#note-close').click();
+            await openNotes(page);
+            assert.match(await page.locator('.note-destination').first().textContent(), /测试笔记目录/);
+            await page.evaluate(() => {
+                window.showDirectoryPicker = async options => {
+                    window.__nativeCancelledStartIn = options.startIn.name;
+                    throw new DOMException('测试：取消更改目录', 'AbortError');
+                };
+            });
+            await page.locator(ids.save).click();
+            await page.waitForFunction(() => document.querySelector('#air-reader-controls').shadowRoot.querySelector('#note-status').textContent.includes('已取消选择'));
+            assert.equal(await page.evaluate(() => window.__nativeCancelledStartIn), '测试笔记目录');
+            await page.evaluate(() => {
+                window.__testLocation.pathname = '/prompts/native-directory-other';
+                document.body.append(document.createElement('span'));
+            });
+            await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+            assert.match(await page.locator('.note-destination').first().textContent(), /测试笔记目录/);
+            await page.locator(ids.title).fill('重开后继续直写');
+            await page.locator(ids.body).fill('关闭重开后仍写入原目录。');
+            await saveNativeDirectory(page);
+            const final = await nativeDirectoryFiles(page);
+            assert.equal(final.length, 3);
+            assert(final.some(file => file.text.includes('关闭重开后仍写入原目录。')));
+            assert.equal(await page.evaluate(() => window.__nativeNotePickerCalls.length), 1, '后续下载重复打开目录选择器');
+            assert.deepEqual(await page.evaluate(() => window.__nativeNotePermissions), [
+                { options: { mode: 'readwrite' }, active: true },
+                { options: { mode: 'readwrite' }, active: true },
+                { options: { mode: 'readwrite' }, active: true }
+            ]);
+            assert.equal(downloads.length, 0, '目录直写产生了浏览器默认下载');
+            await page.locator(ids.download).scrollIntoViewIfNeeded();
+            await page.screenshot({ path: path.join(artifactDir, '选择目录直接下载.png') });
+        } finally {
+            await page.close();
+        }
+    });
+
+    await check('两个安全页面同时导出同名笔记时串行分配文件名，原生文件分别保留完整正文', async () => {
+        const pages = await Promise.all([
+            syntheticPage(null, '/prompts/concurrent-directory-a', { secureOrigin: true }),
+            syntheticPage(null, '/prompts/concurrent-directory-b', { secureOrigin: true })
+        ]);
+        const downloads = [];
+        for (const page of pages) page.on('download', download => downloads.push(download));
+        try {
+            const groupName = `并发目录-${Date.now()}`;
+            for (const [index, page] of pages.entries()) {
+                await installNativeDirectory(page, groupName);
+                await openNotes(page);
+                await page.locator(ids.title).fill('并发同名笔记');
+                await page.locator(ids.body).fill(`并发笔记${index + 1}的完整正文。`);
+                await chooseDirectory(page);
+            }
+            await Promise.all(pages.map(page => saveNativeDirectory(page)));
+            const files = await nativeDirectoryFiles(pages[0]);
+            assert.equal(files.length, 2, '并发导出丢失文件或覆盖同名文件');
+            assert.equal(files.filter(file => / \(2\)\.md$/.test(file.name)).length, 1, '并发导出未分配编号副本');
+            assert(files.some(file => file.text.includes('并发笔记1的完整正文。')));
+            assert(files.some(file => file.text.includes('并发笔记2的完整正文。')));
+            assert.equal(downloads.length, 0);
+        } finally {
+            await Promise.all(pages.map(page => page.close()));
+        }
+    });
+
+    await check('目录授权等待期间禁用操作并拒绝重复点击，授权完成后仅写入一个文件', async () => {
+        const page = await syntheticPage(null, '/prompts/directory-busy', { localFile: true });
+        try {
+            await installPicker(page);
+            await openNotes(page);
+            await chooseDirectory(page);
+            await page.evaluate(() => {
+                window.__noteSelectedDirectory.requestPermission = options => {
+                    window.__notePermissionCalls.push({ options, active: navigator.userActivation.isActive });
+                    return new Promise(resolve => { window.__releaseNotePermission = () => resolve('granted'); });
+                };
+            });
+            await page.locator(ids.download).click();
+            await page.waitForFunction(() => typeof window.__releaseNotePermission === 'function');
+            assert(await page.locator(ids.save).isDisabled());
+            assert.equal(await page.locator(ids.download).getAttribute('aria-disabled'), 'true');
+            await page.locator(ids.download).evaluate(anchor => anchor.click());
+            assert.equal(await page.evaluate(() => window.__notePermissionCalls.length), 1, '忙状态重复请求写入授权');
+            await page.evaluate(() => window.__releaseNotePermission());
+            await page.waitForFunction(() => document.querySelector('#air-reader-controls').shadowRoot.querySelector('#note-status').textContent.includes('已保存并核对'));
+            assert.equal(await page.evaluate(() => window.__noteFileCalls.filter(call => call.create).length), 1);
+            assert(await page.locator(ids.save).isEnabled());
+            assert.equal(await page.locator(ids.download).getAttribute('aria-disabled'), 'false');
+        } finally {
+            await page.close();
+        }
+    });
 }
 
 async function downloadMarkdown(page, scratch, name) {
@@ -665,15 +884,18 @@ export async function verifyQuestionInputs({ context, check, syntheticPage, arti
 
 export async function verifyPickerReceiver({ check, syntheticPage, scratch }) {
     const scenarios = [
-        ['success', '包装 Window 下保存仍使用原生接收对象，保留点击激活并完成写入回读', /已保存并核对/],
-        ['cancel', '包装 Window 下取消保存保留草稿并恢复按钮，不自动下载', /已取消保存/],
-        ['denied', '包装 Window 下权限拒绝显示真实原因且不重试或自动下载', /文件权限被拒绝/],
+        ['success', '选择目录只取得句柄，下载使用同一目录并保留点击激活完成写入回读', /已保存并核对/],
+        ['cancel', '包装 Window 下取消目录选择保留草稿并恢复按钮', /已取消选择/],
+        ['denied', '包装 Window 下目录选择拒绝显示真实原因且不重试', /目录权限被拒绝/],
+        ['permission-denied', '已选目录的写入授权拒绝显式失败，草稿保持且不自动下载', /写入权限/],
         ['write-failure', '包装 Window 下写入失败终止写入，保留草稿并恢复按钮', /磁盘写入失败/],
-        ['readback-mismatch', '包装 Window 下回读不一致明确失败，保留草稿并恢复按钮', /回读内容不一致/]
+        ['close-failure', '文件关闭失败终止写入并显示真实原因', /文件关闭失败/],
+        ['readback-mismatch', '包装 Window 下回读不一致明确失败，保留草稿并恢复按钮', /回读内容不一致/],
+        ['readback-failure', '文件回读失败显式报错并保留已写文件与草稿', /文件回读失败/]
     ];
     for (const [mode, name, pattern] of scenarios) {
         await check(name, async () => {
-            const page = await syntheticPage(null, '/prompts/picker-' + mode, { wrappedWindow: true });
+            const page = await syntheticPage(null, '/prompts/picker-' + mode, { wrappedWindow: true, localFile: true });
             const downloads = [];
             page.on('download', download => downloads.push(download));
             try {
@@ -686,7 +908,13 @@ export async function verifyPickerReceiver({ check, syntheticPage, scratch }) {
                 await openNotes(page);
                 await page.locator(ids.title).fill('保存接收对象测试');
                 const before = await noteDraft(page);
-                await page.locator(ids.save).click();
+                if (mode === 'cancel' || mode === 'denied') await page.locator(ids.save).click();
+                else {
+                    await chooseDirectory(page);
+                    assert.equal(await page.evaluate(() => window.__noteFileCalls.length), 0, '选择目录不应创建或写入文件');
+                    assert.equal(await page.evaluate(() => window.__notePermissionCalls.length), 0, '选择目录不应额外请求写入授权');
+                    await page.locator(ids.download).click();
+                }
                 const selector = mode === 'success' || mode === 'cancel' ? ids.status : ids.error;
                 await page.waitForFunction(({ selector, pattern }) => {
                     const root = document.querySelector('#air-reader-controls').shadowRoot;
@@ -700,39 +928,53 @@ export async function verifyPickerReceiver({ check, syntheticPage, scratch }) {
                     activations: window.__notePickerActivations,
                     closed: window.__noteWriterClosed,
                     aborted: window.__noteWriterAborted,
-                    readbacks: window.__noteReadbacks
+                    readbacks: window.__noteReadbacks,
+                    permissionCalls: window.__notePermissionCalls,
+                    fileCalls: window.__noteFileCalls
                 }));
-                assert.equal(saved.calls.length, 1, '一次点击应只调用一次保存窗口');
-                assert.deepEqual(saved.receivers, [true], '保存方法未使用原生 Window 接收对象');
-                assert.deepEqual(saved.activations, [true], '打开保存窗口时已丢失用户点击激活');
-                assert.equal(saved.calls[0].id, 'air-note-obsidian');
+                assert.equal(saved.calls.length, 1, '一次目录选择只应调用一次选择器，下载不再打开选择器');
+                assert.deepEqual(saved.receivers, [true], '目录选择未使用原生 Window 接收对象');
+                assert.deepEqual(saved.activations, [true], '打开目录选择器时已丢失用户点击激活');
+                assert.equal(saved.calls[0].id, 'air-note-directory');
+                assert.equal(saved.calls[0].mode, 'readwrite');
                 assert.equal(await page.locator(ids.save).isEnabled(), true);
+                assert.equal(await page.locator(ids.download).getAttribute('aria-disabled'), 'false');
                 assert.deepEqual(await noteDraft(page), before, '保存流程改变了草稿');
-                assert.equal(downloads.length, 0, '保存流程不应自动改用下载');
+                assert.equal(downloads.length, 0, '目录写入流程不应自动改用浏览器下载');
+                if (mode !== 'cancel' && mode !== 'denied') {
+                    assert.deepEqual(saved.permissionCalls, [{ options: { mode: 'readwrite' }, active: true }], '目录写入授权必须由下载点击直接发起');
+                }
                 if (mode === 'success') {
                     assert(saved.closed && saved.readbacks === 1 && !saved.aborted, '写入、关闭或回读流程不完整');
                     assert(saved.content.includes('## 我的问题\n\n接收对象测试的完整问题。'));
                     assert(saved.content.includes('## AI 回答\n\n接收对象测试的完整回答。'));
-                    const downloaded = await downloadMarkdown(page, scratch, 'picker-receiver-success.md');
-                    assert.equal(downloaded.text, saved.content, '保存和真实下载的完整文件内容不一致');
+                    assert.match(await page.locator(ids.status).textContent(), /测试笔记目录/);
+                    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', {
+                        configurable: true, value: { writeText: async value => { window.__noteCopied = value; } }
+                    }));
+                    await page.locator('#note-copy').click();
+                    await page.waitForFunction(() => typeof window.__noteCopied === 'string');
+                    assert.equal(await page.evaluate(() => window.__noteCopied), saved.content, '目录直写和复制的完整 Markdown 内容不一致');
                 } else {
                     assert(!(await page.locator(ids.status).textContent()).includes('已保存'));
-                    assert.equal(saved.aborted, mode === 'write-failure', '写入失败未终止写入，或错误终止了其他阶段');
-                    assert.equal(saved.closed, mode === 'readback-mismatch');
-                    assert.equal(saved.readbacks, mode === 'readback-mismatch' ? 1 : 0);
+                    assert.equal(saved.aborted, mode === 'write-failure' || mode === 'close-failure', '写入或关闭失败未终止写入，或错误终止了其他阶段');
+                    assert.equal(saved.closed, mode === 'readback-mismatch' || mode === 'readback-failure');
+                    assert.equal(saved.readbacks, mode.startsWith('readback-') ? 1 : 0);
+                    if (mode === 'permission-denied') assert.equal(saved.fileCalls.length, 0, '写入授权拒绝后仍访问了文件');
                 }
             } finally {
                 await page.close();
             }
         });
     }
-    await check('包装 Window 下原生保存 API 不可用时保持禁用，仍可手动下载', async () => {
+    await check('包装 Window 下目录选择 API 不可用时保持禁用，明确使用默认下载目录', async () => {
         const page = await syntheticPage(null, '/prompts/picker-unavailable', { wrappedWindow: true });
         try {
-            await page.evaluate(() => { window.showSaveFilePicker = undefined; });
+            await page.evaluate(() => { window.showDirectoryPicker = undefined; });
             await openNotes(page);
-            assert(await page.locator(ids.save).isDisabled(), '不存在的保存 API 不应启用按钮');
+            assert(await page.locator(ids.save).isDisabled(), '不存在的目录选择 API 不应启用按钮');
             assert(await page.locator(ids.download).isVisible());
+            assert.match(await page.locator('.note-destination').first().textContent(), /浏览器默认下载目录/);
             const downloaded = await downloadMarkdown(page, scratch, 'picker-unavailable-manual-download.md');
             assert(downloaded.text.includes('## 我的问题') && downloaded.text.includes('## AI 回答'), '原生 API 不可用时手动下载应仍可导出问答');
         } finally {
@@ -743,13 +985,14 @@ export async function verifyPickerReceiver({ check, syntheticPage, scratch }) {
 
 export async function verifyNotes({ context, check, syntheticPage, artifactDir, scratch }) {
     await verifyPickerReceiver({ check, syntheticPage, scratch });
+    await verifyDirectoryWrites({ check, syntheticPage, artifactDir });
     await verifyQuestionInputs({ context, check, syntheticPage, artifactDir, scratch });
     await verifyCitations({ context, check, syntheticPage, artifactDir, scratch });
     const harness = createMarkdownHarness();
     const page = await syntheticPage(null, '/prompts/notes-fixture');
+    let downloadedContent = '';
     try {
         await replaceConversation(page);
-        await installPicker(page);
         const original = await page.locator('ms-autoscroll-container').innerHTML();
         await check('三对问答准确配对，嵌套容器与思考分块不增加选项，默认最后一对', async () => {
             await openNotes(page);
@@ -826,16 +1069,14 @@ export async function verifyNotes({ context, check, syntheticPage, artifactDir, 
             await select;
             assert.deepEqual(await noteDraft(page), before, '取消切换后选项或草稿字段发生改变');
         });
-        await check('系统保存接口成功后回读校验，测试双只验证接口契约', async () => {
-            await page.locator(ids.save).click();
-            await page.waitForFunction(() => document.querySelector('#air-reader-controls').shadowRoot.querySelector('#note-status').textContent.includes('已保存'));
-            const saved = await page.evaluate(() => ({ text: window.__noteSaved, closed: window.__noteWriterClosed, options: window.__notePickerCalls.at(-1) }));
-            assert(saved.closed, '尚未关闭文件就宣称保存成功');
-            assert(saved.text.startsWith('---\n'));
-            assert(saved.text.includes('title: "我的数学笔记"'));
-            assert(saved.text.includes('source: "https://aistudio.google.com/prompts/notes-fixture"'));
-            assert(saved.text.includes('这是手动整理后的笔记。'));
-            assert(saved.options.id, '保存窗口需有独立用途 id 以记住选择位置');
+        await check('未选择文件夹时使用默认下载，完整文件保留标题、来源与编辑正文', async () => {
+            const file = await downloadMarkdown(page, scratch, 'default-destination-note.md');
+            downloadedContent = file.text;
+            assert(file.text.startsWith('---\n'));
+            assert(file.text.includes('title: "我的数学笔记"'));
+            assert(file.text.includes('source: "https://aistudio.google.com/prompts/notes-fixture"'));
+            assert(file.text.includes('这是手动整理后的笔记。'));
+            assert.match(await page.locator('.note-destination').first().textContent(), /浏览器默认下载目录/);
         });
         await check('复制与保存使用同一份 Markdown，剪贴板拒绝显示真实原因', async () => {
             await page.evaluate(() => {
@@ -846,8 +1087,8 @@ export async function verifyNotes({ context, check, syntheticPage, artifactDir, 
             });
             await page.locator('#note-copy').click();
             await page.waitForFunction(() => typeof window.__noteCopied === 'string');
-            const copied = await page.evaluate(() => ({ copied: window.__noteCopied, saved: window.__noteSaved }));
-            assert.equal(copied.copied, copied.saved, '复制和保存生成了不同的笔记内容');
+            const copied = await page.evaluate(() => window.__noteCopied);
+            assert.equal(copied, downloadedContent, '复制和默认下载生成了不同的笔记内容');
             await page.evaluate(() => {
                 Object.defineProperty(navigator, 'clipboard', {
                     configurable: true,
@@ -870,7 +1111,7 @@ export async function verifyNotes({ context, check, syntheticPage, artifactDir, 
             await page.locator(ids.format).selectOption('blog');
             assert.equal(await page.locator(ids.source).isChecked(), false);
             await page.locator(ids.description).fill('');
-            await page.locator(ids.save).click();
+            await page.locator(ids.download).click();
             assert(await page.locator(ids.error).isVisible());
             assert.match(await page.locator(ids.error).textContent(), /摘要/);
             await page.locator(ids.description).fill('对学习中遇到的数学问题做一次清晰整理。');
@@ -899,37 +1140,18 @@ export async function verifyNotes({ context, check, syntheticPage, artifactDir, 
         });
         await check('标签数量、空正文和空标题均显式阻止导出', async () => {
             await page.locator(ids.tags).fill('一,二,三,四,五,六');
-            await page.locator(ids.save).click();
+            await page.locator(ids.download).click();
             assert.match(await page.locator(ids.error).textContent(), /标签/);
             await page.locator(ids.tags).fill('数学');
             await page.locator(ids.body).fill(' \n ');
-            await page.locator(ids.save).click();
+            await page.locator(ids.download).click();
             assert.match(await page.locator(ids.error).textContent(), /正文/);
             await page.locator(ids.body).fill('# 我的整理\n\n这是手动整理后的笔记。\n');
             await page.locator(ids.title).fill(' ');
-            await page.locator(ids.save).click();
+            await page.locator(ids.download).click();
             assert.match(await page.locator(ids.error).textContent(), /标题/);
             await page.locator(ids.title).fill('我的数学笔记');
         });
-        for (const [mode, name, pattern] of [
-            ['cancel', '取消系统保存仅报告取消', /取消/],
-            ['denied', '文件权限拒绝显示真实原因', /文件权限被拒绝/],
-            ['write-failure', '磁盘写入失败显示真实原因', /磁盘写入失败/],
-            ['readback-mismatch', '写回内容不一致不能伪报保存成功', /校验|不一致|核对/]
-        ]) {
-            await check(name, async () => {
-                await installPicker(page, mode);
-                await page.locator(ids.save).click();
-                const feedback = mode === 'cancel' ? page.locator(ids.status) : page.locator(ids.error);
-                await feedback.waitFor({ state: 'visible' });
-                await page.waitForFunction(({ selector, regex }) => {
-                    const root = document.querySelector('#air-reader-controls').shadowRoot;
-                    return new RegExp(regex).test(root.querySelector(selector).textContent);
-                }, { selector: mode === 'cancel' ? ids.status : ids.error, regex: pattern.source });
-                assert.match(await feedback.textContent(), pattern);
-                assert(!(await page.locator(ids.status).textContent()).includes('已保存'), '失败后仍保留保存成功状态');
-            });
-        }
         await check('对话路由切换保留旧草稿和原来源，避免错标新对话', async () => {
             await page.locator(ids.format).selectOption('obsidian');
             await page.locator(ids.source).check();
